@@ -51,7 +51,7 @@ export default {
       });
     }
     if (url.pathname === "/api/ons") {
-      const d = await getOns(env).catch(() => null);
+      const d = await getOns(env, true).catch(() => null);
       return json(d ? { period: d.period, release: d.release, fetchedAt: d.fetchedAt, areas: Object.keys(d.areas).length } : { period: null, note: env.ONS_KV ? "no data yet — call /api/ons/refresh" : "ONS_KV binding not set" });
     }
     if (url.pathname === "/api/ons/refresh") {

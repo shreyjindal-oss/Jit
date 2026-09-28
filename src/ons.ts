@@ -173,7 +173,7 @@ export async function refreshOns(env: Env, force = false): Promise<{ updated: bo
   const page = await onsJson(DATASET);
   const release: string | undefined = page?.datasets?.[0]?.uri;
   if (!release) throw new Error("ONS: no releases listed");
-  const current = await getOns(env);
+  const current = await getOns(env, true);
   if (!force && current?.release === release) return { updated: false, period: current.period, release };
   const rel = await onsJson(release);
   const file = rel?.downloads?.find((d: any) => /\.xlsx$/i.test(d.file))?.file;
@@ -196,17 +196,20 @@ export async function storeOns(env: Env, buf: ArrayBuffer, release: string): Pro
   const parsed = await parsePiprXlsx(buf);
   const data: OnsData = { ...parsed, release, fetchedAt: new Date().toISOString() };
   await env.ONS_KV.put(KV_KEY, JSON.stringify(data));
-  cache = data;
+  cache = { data, at: Date.now() };
   return { updated: true, period: data.period, release, areas: Object.keys(data.areas).length };
 }
 
-let cache: OnsData | null = null;
-export async function getOns(env: Env): Promise<OnsData | null> {
-  if (cache) return cache;
+// Small in-memory cache per Worker instance. Short TTL so a new upload (from another instance or the
+// GitHub Action) is picked up within minutes; `fresh` bypasses it.
+let cache: { data: OnsData | null; at: number } | null = null;
+const CACHE_MS = 5 * 60 * 1000;
+export async function getOns(env: Env, fresh = false): Promise<OnsData | null> {
+  if (!fresh && cache && Date.now() - cache.at < CACHE_MS) return cache.data;
   if (!env.ONS_KV) return null;
-  const v = await env.ONS_KV.get(KV_KEY, "json");
-  cache = (v as OnsData) ?? null;
-  return cache;
+  const v = (await env.ONS_KV.get(KV_KEY, "json")) as OnsData | null;
+  cache = { data: v ?? null, at: Date.now() };
+  return cache.data;
 }
 
 const norm = (s?: string) => (s ?? "").toLowerCase().replace(/,? city of|county of|&/g, "").replace(/[^a-z]/g, "");
