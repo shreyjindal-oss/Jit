@@ -1,0 +1,5 @@
+# Copy to .dev.vars (gitignored) for local `npm run dev`
+APIFY_TOKEN=
+# Optional
+ACCESS_TOKEN=
+PROPERTYDATA_KEY=

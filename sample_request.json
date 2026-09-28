@@ -1,0 +1,15 @@
+{
+  "location": "Canary Wharf, London",
+  "checkIn": "2026-10-12",
+  "checkOut": "2027-01-10",
+  "bedrooms": 2,
+  "bathrooms": 2,
+  "beds": 3,
+  "furnished": "furnished",
+  "maxRentPcm": 3500,
+  "radiusMiles": 2,
+  "sellRateNightly": 175,
+  "setupCost": 1500,
+  "clientAccount": "Example Relocations Ltd",
+  "enquiryRef": "ENQ-12345"
+}

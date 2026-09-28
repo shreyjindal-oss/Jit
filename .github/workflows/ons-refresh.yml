@@ -1,0 +1,63 @@
+# Monthly ONS rent refresh.
+# ONS blocks downloads from Cloudflare's servers, so GitHub downloads the workbook and
+# uploads it to the Worker (POST /api/ons/upload). The Worker parses it and saves it to KV.
+#
+# Repo settings → Secrets and variables → Actions:
+#   secret   JIT_ACCESS_TOKEN  = the Worker's ACCESS_TOKEN
+#   variable JIT_WORKER_URL    = https://jit-inventory-sourcer.mohit6683.workers.dev  (optional, this is the default)
+name: ONS rents refresh
+
+on:
+  schedule:
+    - cron: "30 6 25 * *" # 06:30 UTC on the 25th (ONS publishes mid-month)
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Re-upload even if this release is already loaded"
+        type: boolean
+        default: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      WORKER_URL: ${{ vars.JIT_WORKER_URL || 'https://jit-inventory-sourcer.mohit6683.workers.dev' }}
+      TOKEN: ${{ secrets.JIT_ACCESS_TOKEN }}
+      UA: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36"
+      ONS: https://www.ons.gov.uk
+      DATASET: /economy/inflationandpriceindices/datasets/priceindexofprivaterentsukmonthlypricestatistics
+    steps:
+      - name: Find the latest ONS release
+        id: ons
+        run: |
+          set -euo pipefail
+          REL=$(curl -sfL -A "$UA" "$ONS$DATASET/data" | jq -r '.datasets[0].uri')
+          FILE=$(curl -sfL -A "$UA" "$ONS$REL/data" | jq -r '[.downloads[].file | select(test("\\.xlsx$"))][0]')
+          [ -n "$REL" ] && [ "$FILE" != "null" ] || { echo "Could not find the ONS release/file"; exit 1; }
+          echo "Latest release: $REL ($FILE)"
+          echo "release=$REL" >> "$GITHUB_OUTPUT"
+          echo "file=$FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Skip if the Worker already has it
+        id: check
+        run: |
+          CUR=$(curl -sf "$WORKER_URL/api/ons" | jq -r '.release // ""')
+          echo "Worker has: ${CUR:-nothing}"
+          if [ "$CUR" = "${{ steps.ons.outputs.release }}" ] && [ "${{ inputs.force }}" != "true" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"; echo "Already up to date."
+          fi
+
+      - name: Download from ONS and upload to the Worker
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          [ -n "$TOKEN" ] || { echo "Set the JIT_ACCESS_TOKEN repository secret"; exit 1; }
+          REL="${{ steps.ons.outputs.release }}"
+          curl -sfL -A "$UA" -e "$ONS$DATASET" -o pipr.xlsx "$ONS/file?uri=$REL/${{ steps.ons.outputs.file }}"
+          ls -la pipr.xlsx
+          ENC=$(jq -rn --arg v "$REL" '$v|@uri')
+          curl -sS --fail-with-body -X POST "$WORKER_URL/api/ons/upload?release=$ENC" \
+            -H "x-access-token: $TOKEN" -H "content-type: application/octet-stream" \
+            --data-binary @pipr.xlsx | tee result.json
+          jq -e '.updated == true' result.json

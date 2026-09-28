@@ -1,0 +1,42 @@
+name = "jit-inventory-sourcer"
+main = "src/index.ts"
+compatibility_date = "2025-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+# Sources to run (csv): apify (Rightmove, Zoopla, OnTheMarket, OpenRent rentals), propertydata (optional)
+# Note: Rightmove's terms of use prohibit scraping; apify is enabled for the trial by decision of the project owner.
+ENABLED_SOURCES = "apify,propertydata"
+DEFAULT_RADIUS_MILES = "3"
+# Typical minimum AST / company-let term used for the lease-vs-stay economics.
+MIN_LEASE_MONTHS = "6"
+# Apify actors for rental listings (pay per result; ~$0.10 Rightmove + ~$0.05 Zoopla + ~$0.06 OTM + ~$0.30 OpenRent per search)
+APIFY_RIGHTMOVE_ACTOR = "scrapesage~rightmove-scraper"
+APIFY_ZOOPLA_ACTOR = "scrapesage~zoopla-scraper"
+APIFY_OTM_ACTOR = "fatihtahta~onthemarket-scraper"
+APIFY_OPENRENT_ACTOR = "vivid-softwares~openrent-property-scraper"
+# Portals searched on every enquiry (remove one to save cost/time)
+APIFY_PORTALS = "rightmove,zoopla,onthemarket,openrent"
+APIFY_MAX_RESULTS = "30"
+# "true" opens each Rightmove listing for furnished / available-from (≈3x slower)
+APIFY_RM_DETAILS = "false"
+
+# Monthly ONS refresh: 06:00 UTC on the 25th (ONS publishes mid-month). Needs Workers Paid (the
+# parse takes a few seconds of CPU). Test locally: npx wrangler dev --test-scheduled, then
+# curl "http://127.0.0.1:8787/__scheduled?cron=0+6+25+*+*"
+[triggers]
+crons = ["0 6 25 * *"]
+
+# ONS average rents live in KV (binding ONS_KV). Create it once with:
+#   npx wrangler kv namespace create ONS_KV --binding ONS_KV --update-config
+# which appends a [[kv_namespaces]] block below. (Without it the tool still works, minus the ONS figure.)
+
+# Secrets — NOT here. Locally: .dev.vars. Production:
+#   npx wrangler secret put PROPERTYDATA_KEY
+#   npx wrangler secret put ACCESS_TOKEN     (optional: gates the UI/API)
+#   npx wrangler secret put APIFY_TOKEN      (required: Rightmove/Zoopla)
+
+[[kv_namespaces]]
+binding = "ONS_KV"
+id = "4f14c9f0d3ac44318555bdb14da9b482"
+
