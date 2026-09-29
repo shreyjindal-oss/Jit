@@ -1,20 +1,30 @@
 {
   "name": "jit-inventory-sourcer",
   "version": "0.1.0",
-  "description": "Just-in-time inventory sourcing: find lettable UK rentals (PropertyData, Google-discovered portal listings, local letting agents) for enquiries where thesqua.re has no stock. Cloudflare Worker.",
+  "description": "Just-in-time inventory sourcing: find lettable UK rentals (Rightmove, Zoopla, OnTheMarket, OpenRent) for enquiries where thesqua.re has no stock. Runs on Cloud Run (Node + Cloud SQL Postgres); also deployable as a Cloudflare Worker.",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "start": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "typecheck": "tsc --noEmit",
-    "test": "tsx test/smoke.ts && tsx test/ons.test.ts && tsx test/access-batch.test.ts && tsx test/filters.test.ts && tsx --experimental-sqlite test/db.test.ts && tsx --experimental-sqlite test/alerts.test.ts"
+    "start": "node dist/server.mjs",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.server.json",
+    "test": "tsx test/smoke.ts && tsx test/ons.test.ts && tsx test/access-batch.test.ts && tsx test/filters.test.ts && tsx --experimental-sqlite test/db.test.ts && tsx --experimental-sqlite test/alerts.test.ts && tsx test/pg.test.ts",
+    "build": "esbuild server/main.ts --bundle --platform=node --format=esm --target=node22 --external:pg --external:pg-native --outfile=dist/server.mjs",
+    "dev:node": "tsx server/main.ts",
+    "deploy:cf": "wrangler deploy"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260928.1",
+    "@electric-sql/pglite": "^0.5.8",
+    "@electric-sql/pglite-socket": "^0.2.11",
+    "@types/node": "^26.6.3",
+    "@types/pg": "^8.23.1",
+    "esbuild": "^0.28.2",
     "tsx": "^4.19.1",
     "typescript": "^5.6.2",
     "wrangler": "^4.142.0"
+  },
+  "dependencies": {
+    "pg": "^8.23.0"
   }
 }

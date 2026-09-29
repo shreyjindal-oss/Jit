@@ -1,4 +1,4 @@
-export function html(needsToken: boolean, embed = false): string {
+export function html(needsToken: boolean, embed = false, saveToken?: string): string {
   return /* html */ `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>JIT Inventory Sourcer · thesqua.re</title>
@@ -39,7 +39,7 @@ tr.clk{cursor:pointer}tr.clk:hover td{background:#f7f9ff}
 </style></head><body>
 ${embed ? "<style>header{display:none}main{padding:8px}</style>" : ""}<header><h1>Just-in-time Inventory Sourcer</h1><span>Find lettable stock when we have an enquiry but no inventory</span></header>
 <main>
-<nav class="tabs noprint"><button class="on" data-tab="search">Search</button><button data-tab="history">Saved searches</button><button data-tab="bulk">Bulk upload</button><button data-tab="alerts">Alerts</button></nav>
+<nav class="tabs noprint"><button class="on" data-tab="search">Search</button><button data-tab="history">Saved searches</button><button data-tab="bulk">Bulk upload</button><button data-tab="alerts">Alerts</button><span style="flex:1"></span><button type="button" class="sec" id="share" onclick="copyShare()" title="Copy a link with the access code built in — whoever opens it is signed in on that device">Copy share link</button></nav>
 <section id="tab-search">
 <div class="card noprint">
 <form id="f">
@@ -101,6 +101,7 @@ ${embed ? "<style>header{display:none}main{padding:8px}</style>" : ""}<header><h
 <div id="gal" onclick="if(event.target.id==='gal')closeGal()"><div class="bar"><button onclick="galStep(-1)">‹</button><span id="gc"></span><button onclick="galStep(1)">›</button><button onclick="closeGal()">Close ✕</button></div><img id="gi" referrerpolicy="no-referrer" alt=""><div class="strip" id="gs"></div></div>
 </main>
 <script>
+${saveToken ? `try{localStorage.setItem("jit_token",${JSON.stringify(saveToken).replace(/</g, "\\u003c")});}catch(e){} history.replaceState(null,"",location.pathname+(location.search.includes("embed=1")?"?embed=1":""));` : ""}
 const $=s=>document.querySelector(s), f=$('#f'), out=$('#out'), st=$('#status');
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const gbp=n=>n==null?'—':'£'+Math.round(n).toLocaleString('en-GB');
@@ -115,8 +116,8 @@ let last=null, lastListings=[];
 const tokenVal=()=>{ try{ return (f.token&&f.token.value)||localStorage.getItem('jit_token')||''; }catch(e){ return (f.token&&f.token.value)||''; } };
 const hdr=(extra={})=>{ const t=tokenVal(); return {...extra, ...(t?{'x-access-token':t}:{})}; };
 const api=async(path,opt={})=>{ const r=await fetch(path,{...opt,headers:hdr(opt.headers||{})}); const j=await r.json().catch(()=>({})); if(!r.ok) throw new Error(j.error||('HTTP '+r.status)); return j; };
-document.querySelectorAll('nav.tabs button').forEach(b=>b.onclick=()=>showTab(b.dataset.tab));
-function showTab(t){ document.querySelectorAll('nav.tabs button').forEach(x=>x.classList.toggle('on',x.dataset.tab===t)); ['search','history','bulk','alerts'].forEach(x=>$('#tab-'+x).hidden=x!==t); if(t==='history')loadHistory(); if(t==='bulk')loadBatches(); if(t==='alerts'){alertSummary();loadAlerts();} }
+document.querySelectorAll('nav.tabs button[data-tab]').forEach(b=>b.onclick=()=>showTab(b.dataset.tab));
+function showTab(t){ document.querySelectorAll('nav.tabs button[data-tab]').forEach(x=>x.classList.toggle('on',x.dataset.tab===t)); ['search','history','bulk','alerts'].forEach(x=>$('#tab-'+x).hidden=x!==t); if(t==='history')loadHistory(); if(t==='bulk')loadBatches(); if(t==='alerts'){alertSummary();loadAlerts();} }
 try{const t=localStorage.getItem('jit_token'); if(t&&f.token) f.token.value=t;}catch(e){}
 (function(){const d=new Date(Date.now()+7*864e5), e=new Date(Date.now()+97*864e5);f.checkIn.value=d.toISOString().slice(0,10);f.checkOut.value=e.toISOString().slice(0,10);})();
 
@@ -125,7 +126,7 @@ f.onsubmit=async ev=>{
   const body=formBody(f); const token=body.token; delete body.token; if(!body.bedrooms.length){ st.innerHTML='<span class="bad">Pick at least one bedroom option.</span>'; b.disabled=false; return; }
   try{ if(token) localStorage.setItem('jit_token',token);}catch(e){}
   try{
-    const r=await fetch('/api/search',{method:'POST',headers:{'content-type':'application/json',...(token?{'x-access-token':token}:{})},body:JSON.stringify(body)});
+    const r=await fetch('/api/search',{method:'POST',headers:hdr({'content-type':'application/json',...(token?{'x-access-token':token}:{})}),body:JSON.stringify(body)});
     const j=await r.json(); if(!r.ok) throw new Error(j.error||r.status);
     last=j; render(j); st.textContent='Done · '+new Date(j.generatedAt).toLocaleTimeString()+(j.id?' · saved':'');
   }catch(e){ st.innerHTML='<span class="bad">'+esc(e.message)+'</span>'; }
@@ -262,5 +263,10 @@ async function alertAct(btn,a){
   try{ const j=await api('/api/alerts/'+btn.dataset.id+'/'+a,{method:'POST'}); if(a==='run') $('#ast').innerHTML='<span class="ok">Run complete: '+j.newCount+' new listing(s)'+(j.emailed?' — emailed.':' — nothing new, no email sent.')+'</span>'; }
   catch(e){ $('#ast').innerHTML='<span class="bad">'+esc(e.message)+'</span>'; } finally{ btn.textContent=o; btn.disabled=false; loadAlerts(); }
 }
+
+async function copyShare(){ const b=$('#share'), o=b.textContent;
+  try{ const j=await api('/api/share-link'); await navigator.clipboard.writeText(j.url); b.textContent='Link copied ✓'; }
+  catch(e){ b.textContent=/unauth/.test(e.message)?'Sign in first':'Copy failed'; }
+  setTimeout(()=>b.textContent=o,2500); }
 </script></body></html>`;
 }

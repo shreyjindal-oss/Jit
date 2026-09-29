@@ -1,0 +1,10 @@
+node_modules
+.git
+.github
+.wrangler
+.dev.vars
+.env*
+dist
+test
+*.xlsx
+_to_delete

@@ -167,7 +167,14 @@ export async function processBatchTick(env: Env): Promise<{ processed: number }>
   if ((await searchesToday(env)) >= cap) return { processed: 0 }; // wait for tomorrow; rows stay pending
 
   const now = new Date().toISOString();
-  await env.DB.batch(results.map((r) => env.DB!.prepare(`UPDATE batch_rows SET status='running', attempts=attempts+1, started_at=?3 WHERE batch_id=?1 AND row_no=?2`).bind(r.batch_id, r.row_no, now)));
+  // Claim atomically (only if still pending) so overlapping ticks never run the same row twice.
+  const claimed: any[] = [];
+  for (const r of results) {
+    const c: any = await env.DB.prepare(`UPDATE batch_rows SET status='running', attempts=attempts+1, started_at=?3 WHERE batch_id=?1 AND row_no=?2 AND status='pending'`).bind(r.batch_id, r.row_no, now).run();
+    if ((c?.meta?.changes ?? 1) > 0) claimed.push(r);
+  }
+  if (!claimed.length) return { processed: 0 };
+  results.splice(0, results.length, ...claimed);
   await env.DB.batch([...new Set(results.map((r) => r.batch_id))].map((b) => env.DB!.prepare(`UPDATE batches SET status='running' WHERE id=?1`).bind(b)));
 
   await Promise.all(results.map(async (r) => {

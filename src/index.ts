@@ -7,6 +7,14 @@ import { createAlert, listAlerts, processAlertsTick, runAlert, stopAlert } from 
 import { batchCsv, createBatch, getBatch, listBatches, processBatchTick, TEMPLATE_CSV } from "./batch";
 
 const COOKIE = "jit_auth";
+
+/** One "minute" job: a due alert takes the tick; otherwise one bulk row. Shared by the Workers cron and Cloud Scheduler. */
+export async function cronTick(env: Env): Promise<{ alert?: unknown; batch?: unknown }> {
+  const a = await processAlertsTick(env).catch((e) => ({ error: String(e?.message ?? e) }) as any);
+  if (a?.ran) return { alert: a };
+  return { alert: a, batch: await processBatchTick(env) };
+}
+
 const COOKIE_DAYS = 180;
 
 const json = (data: unknown, status = 200, extra: Record<string, string> = {}) =>
@@ -43,7 +51,9 @@ export default {
       const t = url.searchParams.get("token");
       const embed = url.searchParams.get("embed") === "1";
       if (env.ACCESS_TOKEN && t === env.ACCESS_TOKEN) {
-        return new Response(null, { status: 302, headers: { location: embed ? "/?embed=1" : "/", "set-cookie": setCookie(t) } });
+        // Share link (…/?token=CODE): sign in via cookie AND keep the code in the browser, so it still works where
+        // cookies are blocked (e.g. inside an iframe). The page removes the code from the address bar.
+        return new Response(html(false, embed, t), { headers: { "content-type": "text/html; charset=utf-8", "set-cookie": setCookie(t), "referrer-policy": "no-referrer", "cache-control": "no-store" } });
       }
       const needsToken = !!env.ACCESS_TOKEN && cookieToken(request) !== env.ACCESS_TOKEN;
       return new Response(html(needsToken, embed), { headers: { "content-type": "text/html; charset=utf-8" } });
@@ -150,6 +160,21 @@ export default {
       if (!authorised(request, env)) return json({ error: "unauthorised" }, 401);
       return json(await processBatchTick(env));
     }
+    // ---- scheduled jobs over HTTP (Cloud Scheduler on Cloud Run; also usable by hand anywhere)
+    if (url.pathname === "/api/cron/tick" && request.method === "POST") {
+      if (!authorised(request, env)) return json({ error: "unauthorised" }, 401);
+      return json(await cronTick(env));
+    }
+    if (url.pathname === "/api/cron/ons" && request.method === "POST") {
+      if (!authorised(request, env)) return json({ error: "unauthorised" }, 401);
+      try { return json(await refreshOns(env)); } catch (e: any) { return json({ error: String(e?.message ?? e) }, 500); }
+    }
+    // ---- share link: a URL with the access code built in (for signed-in users to hand to colleagues)
+    if (url.pathname === "/api/share-link" && request.method === "GET") {
+      if (!authorised(request, env)) return json({ error: "unauthorised" }, 401);
+      const base = (env.PUBLIC_URL || url.origin).replace(/\/$/, "");
+      return json({ url: env.ACCESS_TOKEN ? `${base}/?token=${encodeURIComponent(env.ACCESS_TOKEN)}` : `${base}/`, embedUrl: env.ACCESS_TOKEN ? `${base}/?token=${encodeURIComponent(env.ACCESS_TOKEN)}&embed=1` : `${base}/?embed=1` });
+    }
     // ---- alerts
     if (url.pathname === "/api/alerts" && request.method === "POST") {
       if (!authorised(request, env)) return json({ error: "unauthorised" }, 401);
@@ -192,19 +217,9 @@ export default {
    */
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     if (event.cron === "* * * * *") {
-      // One heavy job per minute: a due alert takes the tick; otherwise process a bulk row. Keeps Apify concurrency low.
-      ctx.waitUntil(
-        processAlertsTick(env)
-          .catch((e) => (console.error("alert tick failed", String(e?.message ?? e)), {} as { ran?: string }))
-          .then((a) => (a.ran ? (console.log("alert tick", JSON.stringify(a)), undefined) : processBatchTick(env).then((r) => r.processed && console.log("batch tick", JSON.stringify(r)))))
-          .catch((e) => console.error("batch tick failed", String(e?.message ?? e))),
-      );
+      ctx.waitUntil(cronTick(env).then((r) => console.log("tick", JSON.stringify(r))).catch((e) => console.error("tick failed", String(e?.message ?? e))));
       return;
     }
-    ctx.waitUntil(
-      refreshOns(env)
-        .then((r) => console.log("ONS refresh", JSON.stringify(r)))
-        .catch((e) => console.error("ONS refresh failed", String(e?.message ?? e))),
-    );
+    ctx.waitUntil(refreshOns(env).then((r) => console.log("ONS refresh", JSON.stringify(r))).catch((e) => console.error("ONS refresh failed", String(e?.message ?? e))));
   },
 };

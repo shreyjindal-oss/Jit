@@ -56,8 +56,16 @@ assert.equal(gated.status, 401);
 const withCookie = await worker.fetch(new Request("http://x/api/search?location=E14", { headers: { cookie: "jit_auth=t" } }), { ...env, ACCESS_TOKEN: "t" } as any);
 assert.equal(withCookie.status, 400, "cookie authorises (400 = got past auth, failed validation)");
 const link = await worker.fetch(new Request("http://x/?token=t"), { ...env, ACCESS_TOKEN: "t" } as any);
-assert.equal(link.status, 302);
+assert.equal(link.status, 200); // share link: page signs in (cookie + saved code) and cleans the URL
 assert.ok(link.headers.get("set-cookie")?.includes("jit_auth=t"));
+const page = await link.text();
+assert.ok(page.includes('localStorage.setItem("jit_token","t")') && page.includes("history.replaceState") && !page.includes('name="token"'));
+const badLink = await worker.fetch(new Request("http://x/?token=wrong"), { ...env, ACCESS_TOKEN: "t" } as any);
+assert.ok((await badLink.text()).includes('name="token"') && !badLink.headers.get("set-cookie"));
+const share = await worker.fetch(new Request("http://x/api/share-link", { headers: { "x-access-token": "t" } }), { ...env, ACCESS_TOKEN: "t", PUBLIC_URL: "https://jit.run.app/" } as any);
+assert.equal((await share.json() as any).url, "https://jit.run.app/?token=t");
+assert.equal((await worker.fetch(new Request("http://x/api/share-link"), { ...env, ACCESS_TOKEN: "t" } as any)).status, 401);
+assert.equal((await worker.fetch(new Request("http://x/api/cron/tick", { method: "POST" }), { ...env, ACCESS_TOKEN: "t" } as any)).status, 401);
 console.log("SMOKE OK");
 
 // --- Apify (Rightmove + Zoopla) adapter with mocked actor output

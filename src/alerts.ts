@@ -168,7 +168,7 @@ export function alertEmailHtml(env: Env, a: any, req: SearchRequest, ls: Listing
     </td></tr>
     <tr><td><table width="100%" cellpadding="0" cellspacing="0">${rows}</table></td></tr>
     <tr><td style="padding-top:14px;font-size:12px;color:#626a78">Alert "${esc(a.name)}" · every ${a.frequency_days === 1 ? "day" : a.frequency_days + " days"} until ${esc(a.end_date)}.
-      ${base ? `<a href="${base}/">Open the sourcer</a> · ` : ""}${stop ? `<a href="${stop}">Stop this alert</a>` : ""}<br>
+      ${base ? `<a href="${base}/${env.ACCESS_TOKEN ? `?token=${encodeURIComponent(env.ACCESS_TOKEN)}` : ""}">Open the sourcer</a> · ` : ""}${stop ? `<a href="${stop}">Stop this alert</a>` : ""}<br>
       Accessibility and availability are read from listing text — always confirm with the agent or landlord.</td></tr>
   </table></td></tr></table></body></html>`;
 }
