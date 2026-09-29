@@ -9,7 +9,7 @@
     "start": "wrangler dev",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
-    "test": "tsx test/smoke.ts && tsx test/ons.test.ts && tsx test/access-batch.test.ts && tsx --experimental-sqlite test/db.test.ts"
+    "test": "tsx test/smoke.ts && tsx test/ons.test.ts && tsx test/access-batch.test.ts && tsx test/filters.test.ts && tsx --experimental-sqlite test/db.test.ts && tsx --experimental-sqlite test/alerts.test.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260928.1",

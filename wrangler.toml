@@ -10,7 +10,7 @@ ENABLED_SOURCES = "apify,propertydata"
 DEFAULT_RADIUS_MILES = "3"
 # Typical minimum AST / company-let term used for the lease-vs-stay economics.
 MIN_LEASE_MONTHS = "6"
-# Apify actors for rental listings (pay per result; ~$0.10 Rightmove + ~$0.05 Zoopla + ~$0.06 OTM + ~$0.30 OpenRent per search)
+# Apify actors for rental listings (pay per result; ~$0.10 Rightmove + ~$0.05 Zoopla + ~$0.06 OTM + ~$0.15 OpenRent (10 max) per search)
 APIFY_RIGHTMOVE_ACTOR = "scrapesage~rightmove-scraper"
 APIFY_ZOOPLA_ACTOR = "scrapesage~zoopla-scraper"
 APIFY_OTM_ACTOR = "fatihtahta~onthemarket-scraper"
@@ -20,16 +20,23 @@ APIFY_PORTALS = "rightmove,zoopla,onthemarket,openrent"
 APIFY_MAX_RESULTS = "30"
 # "true" opens each Rightmove listing for furnished / available-from (≈3x slower)
 APIFY_RM_DETAILS = "false"
-# Cost guards (each search ≈ $0.50 of Apify credit)
+# Cost guards (each search ≈ $0.35 of Apify credit)
 MAX_SEARCHES_PER_DAY = "100"   # UI + bulk combined; beyond this searches are refused / bulk rows wait until tomorrow
 MAX_BATCH_ROWS = "50"          # rows per uploaded sheet
-BATCH_CONCURRENCY = "2"        # bulk rows processed per minute
+BATCH_CONCURRENCY = "1"        # bulk rows per minute (1 keeps Apify under its concurrent-run cap)
+APIFY_OPENRENT_MAX = "10"      # OpenRent listings per search (the costliest actor)
+# Alerts (emails via SendGrid; key: wrangler secret put SENDGRID_API_KEY)
+ALERT_FROM_EMAIL = "noreply@thesqua.re"
+ALERT_EMAIL_DOMAINS = "thesqua.re"   # alerts can only be sent to these domains
+MAX_ACTIVE_ALERTS = "20"             # across everyone
+MAX_ALERTS_PER_EMAIL = "3"
+PUBLIC_URL = "https://jit-inventory-sourcer.mohit6683.workers.dev"
 
 # Monthly ONS refresh: 06:00 UTC on the 25th (ONS publishes mid-month). Needs Workers Paid (the
 # parse takes a few seconds of CPU). Test locally: npx wrangler dev --test-scheduled, then
 # curl "http://127.0.0.1:8787/__scheduled?cron=0+6+25+*+*"
 [triggers]
-crons = ["* * * * *", "0 6 25 * *"] # every minute: process bulk-upload rows · 25th: ONS refresh attempt
+crons = ["* * * * *", "0 6 25 * *"] # every minute: one due alert or one bulk-upload row · 25th: ONS refresh attempt
 
 # ONS average rents live in KV (binding ONS_KV). Create it once with:
 #   npx wrangler kv namespace create ONS_KV --binding ONS_KV --update-config
@@ -44,6 +51,7 @@ crons = ["* * * * *", "0 6 25 * *"] # every minute: process bulk-upload rows · 
 #   npx wrangler secret put PROPERTYDATA_KEY
 #   npx wrangler secret put ACCESS_TOKEN     (optional: gates the UI/API)
 #   npx wrangler secret put APIFY_TOKEN      (required: Rightmove/Zoopla)
+#   npx wrangler secret put SENDGRID_API_KEY (alerts email)
 
 [[kv_namespaces]]
 binding = "ONS_KV"

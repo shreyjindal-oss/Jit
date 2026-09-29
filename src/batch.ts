@@ -9,9 +9,9 @@ import { newId, saveSearch, searchesToday } from "./db";
  */
 
 export const TEMPLATE_CSV =
-  "location,check_in,check_out,bedrooms,bathrooms,max_rent_pcm,radius_miles,furnished,accessibility,client_account,enquiry_ref,sell_rate_nightly\n" +
-  "Canary Wharf London,2026-11-01,2027-02-01,2,1,3500,2,furnished,any,Example Relocations,ENQ-1001,175\n" +
-  "M1 1AE,01/12/2026,01/03/2027,3,2,,3,any,ground floor,Example Housing Assoc,ENQ-1002,\n";
+  "location,check_in,check_out,bedrooms,bathrooms,min_rent_pcm,max_rent_pcm,radius_miles,property_type,furnished,accessibility,must_have,client_account,enquiry_ref,sell_rate_nightly\n" +
+  "Canary Wharf London,2026-11-01,2027-02-01,2,1,,3500,2,flat,furnished,any,parking,Example Relocations,ENQ-1001,175\n" +
+  "M1 1AE,01/12/2026,01/03/2027,3;4,2,,,3,house;bungalow,any,ground floor,parking;pets,Example Housing Assoc,ENQ-1002,\n";
 
 // Header aliases → our field names
 const ALIASES: Record<string, string> = {
@@ -22,7 +22,12 @@ const ALIASES: Record<string, string> = {
   bathrooms: "bathrooms", baths: "bathrooms",
   max_rent_pcm: "maxRentPcm", max_rent: "maxRentPcm", budget: "maxRentPcm", budget_pcm: "maxRentPcm",
   radius_miles: "radiusMiles", radius: "radiusMiles",
-  furnished: "furnished",
+  furnished: "furnished", furnishing: "furnished",
+  min_rent_pcm: "minRentPcm", min_rent: "minRentPcm",
+  property_type: "propertyTypes", property_types: "propertyTypes", type: "propertyTypes",
+  must_have: "mustHave", must_haves: "mustHave", features: "mustHave", amenities: "mustHave",
+  min_size_sq_ft: "minSizeSqFt", min_sqft: "minSizeSqFt",
+  added_within_days: "addedWithinDays",
   accessibility: "accessibility", access: "accessibility", accessible: "accessibility",
   client_account: "clientAccount", client: "clientAccount", account: "clientAccount",
   enquiry_ref: "enquiryRef", enquiry: "enquiryRef", enquiry_id: "enquiryRef", ref: "enquiryRef", reference: "enquiryRef",
@@ -41,17 +46,23 @@ function toIsoDate(v: string): string {
   const d = new Date(s);
   return isNaN(+d) ? s : d.toISOString().slice(0, 10);
 }
+/** "2", "2 bed", "Studio", "2;3", "2-3 bed", "studio or 1 bed" → "2" / "2,3" / "0,1" */
 function toBeds(v: string): string {
   const s = String(v ?? "").toLowerCase();
-  if (/studio/.test(s)) return "0";
-  return s.match(/\d+/)?.[0] ?? s;
+  const range = s.match(/(\d)\s*(?:-|–|to)\s*(\d)/);
+  const out = new Set<number>();
+  if (/studio/.test(s)) out.add(0);
+  if (range) for (let b = +range[1]; b <= +range[2]; b++) out.add(b);
+  else for (const m of s.matchAll(/\d+/g)) out.add(+m[0]);
+  return out.size ? [...out].sort((a, b) => a - b).join(",") : s;
 }
+/** "ground floor; wheelchair" → "ground_floor,wheelchair" */
 function toAccess(v: string): string {
-  const s = String(v ?? "").toLowerCase();
-  if (/wheel/.test(s)) return "wheelchair";
-  if (/step|lift|level/.test(s)) return "step_free";
-  if (/ground|bungalow/.test(s)) return "ground_floor";
-  return "any";
+  const s = String(v ?? "").toLowerCase(), out: string[] = [];
+  if (/wheel/.test(s)) out.push("wheelchair");
+  if (/step|lift|level/.test(s)) out.push("step_free");
+  if (/ground|bungalow/.test(s)) out.push("ground_floor");
+  return out.join(",") || "any";
 }
 
 /** Raw rows → request bodies for validate(). */
@@ -64,8 +75,16 @@ export function rowsToBodies(rows: Record<string, string>[]): Record<string, str
     if (out.bedrooms) out.bedrooms = toBeds(out.bedrooms);
     if (out.maxRentPcm) out.maxRentPcm = out.maxRentPcm.replace(/[£,\s]/g, "");
     if (out.sellRateNightly) out.sellRateNightly = out.sellRateNightly.replace(/[£,\s]/g, "");
-    if (out.furnished) out.furnished = /unfurn/i.test(out.furnished) ? "unfurnished" : /furn|yes/i.test(out.furnished) ? "furnished" : "any";
-    out.accessibility = toAccess(out.accessibility ?? "");
+    if (out.minRentPcm) out.minRentPcm = out.minRentPcm.replace(/[£,\s]/g, "");
+    if (out.furnished) { // "furnished", "part furnished; unfurnished", "yes", "any"
+      const f = out.furnished.toLowerCase(), set: string[] = [];
+      if (/part/.test(f)) set.push("part_furnished");
+      if (/unfurn|^no$/.test(f)) set.push("unfurnished");
+      if (/(?:^|[^a-z])furn|yes/.test(f.replace(/part[ -]?furnished|unfurnished/g, ""))) set.push("furnished");
+      delete out.furnished; if (set.length) out.furnishing = set.join(",");
+    }
+    const acc = toAccess(out.accessibility ?? "");
+    delete out.accessibility; if (acc !== "any") out.accessNeeds = acc;
     return out;
   });
 }
@@ -140,7 +159,7 @@ export async function processBatchTick(env: Env): Promise<{ processed: number }>
   await env.DB.prepare(`UPDATE batch_rows SET status='pending' WHERE status='running' AND started_at < ?1 AND attempts < 2`).bind(stale).run();
   await env.DB.prepare(`UPDATE batch_rows SET status='error', error='timed out twice' WHERE status='running' AND started_at < ?1 AND attempts >= 2`).bind(stale).run();
 
-  const n = Number(env.BATCH_CONCURRENCY || 2);
+  const n = Number(env.BATCH_CONCURRENCY || 1);
   const { results } = await env.DB.prepare(`SELECT batch_id, row_no, request_json FROM batch_rows WHERE status='pending' ORDER BY batch_id, row_no LIMIT ?1`).bind(n).all<any>();
   if (!results.length) return { processed: 0 };
 

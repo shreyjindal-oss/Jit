@@ -11,12 +11,12 @@ function median(xs: number[]): number | null {
   return s.length % 2 ? s[m] : Math.round((s[m - 1] + s[m]) / 2);
 }
 
-export async function saveSearch(env: Env, res: SearchResponse, opts: { source: "ui" | "batch" | "api"; batchId?: string; durationMs?: number }): Promise<string | null> {
+export async function saveSearch(env: Env, res: SearchResponse, opts: { source: "ui" | "batch" | "api" | "alert"; batchId?: string; durationMs?: number }): Promise<string | null> {
   if (!env.DB) return null;
   const id = newId();
   const r = res.request;
   const { listings, ...summary } = res;
-  const rents = listings.filter((l) => l.rentPcm && l.bedrooms === r.bedrooms).map((l) => l.rentPcm!);
+  const rents = listings.filter((l) => l.rentPcm && (r.bedroomOptions ?? [r.bedrooms]).includes(l.bedrooms ?? -1)).map((l) => l.rentPcm!);
   const stmts: D1PreparedStatement[] = [
     env.DB.prepare(
       `INSERT INTO searches (id, created_at, source, batch_id, location, outcode, la_name, bedrooms, bathrooms, check_in, check_out, accessibility,
@@ -24,7 +24,7 @@ export async function saveSearch(env: Env, res: SearchResponse, opts: { source: 
        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)`,
     ).bind(
       id, nowIso(), opts.source, opts.batchId ?? null, r.location, res.geo?.outcode ?? null, res.geo?.district ?? res.geo?.town ?? null,
-      r.bedrooms, r.bathrooms ?? null, r.checkIn, r.checkOut, r.accessibility ?? "any", r.clientAccount ?? null, r.enquiryRef ?? null,
+      r.bedrooms, r.bathrooms ?? null, r.checkIn, r.checkOut, r.accessNeeds?.join(",") || r.accessibility || "any", r.clientAccount ?? null, r.enquiryRef ?? null,
       listings.length, median(rents), res.ons?.avgPcm ?? null, opts.durationMs ?? null, JSON.stringify(r), JSON.stringify(summary),
     ),
   ];

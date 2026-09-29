@@ -6,37 +6,63 @@ import { getOns, onsLookup } from "./ons";
 import { rentBenchmark, rentToRent } from "./sources/propertydata";
 import { apifyListings } from "./sources/apify";
 import { accessFit, detectAccess, type AccessNeed } from "./access";
+import { FEATURE_ALIAS, FEATURE_LABEL, FEATURES, FURNISH_ALIAS, FURNISHINGS, PROP_TYPES, TYPE_ALIAS, ADDED_WITHIN, detectFeatures, furnishClass, listOf, type Feature } from "./filters";
+
+const ACCESS_NEEDS = ["ground_floor", "step_free", "wheelchair"] as const;
+const ACCESS_LABEL: Record<string, string> = { ground_floor: "ground floor ✓", step_free: "step-free ✓", wheelchair: "wheelchair signals ✓" };
 
 const ISO = /^\d{4}-\d{2}-\d{2}$/;
 
 export function validate(body: any): { req?: SearchRequest; error?: string } {
   const n = (v: any) => (v === "" || v == null ? undefined : Number(v));
+  // Bedrooms: a number, an array ([2,3]) or "2,3".
+  const bedsRaw = Array.isArray(body?.bedrooms) ? body.bedrooms : String(body?.bedrooms ?? "").split(/[,;]+/);
+  const bedOpts = [...new Set(bedsRaw.filter((x: any) => String(x).trim() !== "").map((x: any) => Number(String(x).trim())))].sort((a: any, b: any) => a - b) as number[];
+  // Furnishing: new multi field, or the legacy single `furnished`.
+  const furnishing = listOf(body?.furnishing ?? (body?.furnished && body.furnished !== "any" ? body.furnished : undefined), FURNISHINGS, FURNISH_ALIAS);
+  const accessNeeds = listOf(body?.accessNeeds ?? body?.accessibility, ACCESS_NEEDS as unknown as AccessNeed[], { ground: "ground_floor", stepfree: "step_free", step_free: "step_free", wheelchair_accessible: "wheelchair" });
+  const added = n(body?.addedWithinDays);
   const req: SearchRequest = {
     location: String(body?.location ?? "").trim(),
     checkIn: String(body?.checkIn ?? ""),
     checkOut: String(body?.checkOut ?? ""),
-    bedrooms: Number(body?.bedrooms ?? NaN),
+    bedrooms: bedOpts.length ? bedOpts[0] : NaN,
     bathrooms: n(body?.bathrooms),
     beds: n(body?.beds),
     maxRentPcm: n(body?.maxRentPcm),
-    furnished: ["furnished", "unfurnished"].includes(body?.furnished) ? body.furnished : "any",
+    minRentPcm: n(body?.minRentPcm),
+    minSizeSqFt: n(body?.minSizeSqFt),
+    furnished: furnishing.length === 1 && furnishing[0] !== "part_furnished" ? (furnishing[0] as "furnished" | "unfurnished") : "any",
     radiusMiles: n(body?.radiusMiles),
     sellRateNightly: n(body?.sellRateNightly),
     setupCost: n(body?.setupCost),
     clientAccount: body?.clientAccount ? String(body.clientAccount) : undefined,
     enquiryRef: body?.enquiryRef ? String(body.enquiryRef) : undefined,
-    accessibility: (["ground_floor", "step_free", "wheelchair"].includes(body?.accessibility) ? body.accessibility : "any") as AccessNeed,
+    accessibility: (accessNeeds[0] ?? "any") as AccessNeed,
   };
+  if (bedOpts.length > 1) req.bedroomOptions = bedOpts;
+  if (furnishing.length && furnishing.length < FURNISHINGS.length) req.furnishing = furnishing;
+  const types = listOf(body?.propertyTypes ?? body?.propertyType, PROP_TYPES, TYPE_ALIAS);
+  if (types.length && types.length < PROP_TYPES.length) req.propertyTypes = types;
+  if (accessNeeds.length) req.accessNeeds = accessNeeds;
+  const must = listOf(body?.mustHave, FEATURES, FEATURE_ALIAS);
+  if (must.length) req.mustHave = must;
+  if (added && ADDED_WITHIN.includes(added)) req.addedWithinDays = added;
+  if (body?.strict === true || body?.strict === "true" || body?.strict === "1" || body?.strict === "on") req.strict = true;
   if (!req.location) return { error: "location is required" };
   if (!ISO.test(req.checkIn) || !ISO.test(req.checkOut)) return { error: "checkIn/checkOut must be YYYY-MM-DD" };
   if (Date.parse(req.checkOut) <= Date.parse(req.checkIn)) return { error: "checkOut must be after checkIn" };
-  if (!Number.isInteger(req.bedrooms) || req.bedrooms < 0 || req.bedrooms > 6) return { error: "bedrooms must be 0 (studio) to 6" };
+  if (!bedOpts.length || bedOpts.some((b) => !Number.isInteger(b) || b < 0 || b > 6)) return { error: "bedrooms must be 0 (studio) to 6" };
+  if (req.minRentPcm && req.maxRentPcm && req.minRentPcm > req.maxRentPcm) return { error: "min rent is above max rent" };
   return { req };
 }
 
+const bedOk = (req: SearchRequest, b: number) => (req.bedroomOptions ? req.bedroomOptions.includes(b) : b === req.bedrooms);
+const needsOf = (req: SearchRequest): AccessNeed[] => req.accessNeeds?.length ? req.accessNeeds : req.accessibility && req.accessibility !== "any" ? [req.accessibility] : [];
+
 function score(l: Listing, req: SearchRequest, benchPcm?: number): number {
   let s = 0;
-  if (l.bedrooms === req.bedrooms) s += 30; else if (l.bedrooms === undefined) s += 10;
+  if (l.bedrooms !== undefined && bedOk(req, l.bedrooms)) s += 30; else if (l.bedrooms === undefined) s += 10;
   if (req.bathrooms && l.bathrooms !== undefined) s += l.bathrooms >= req.bathrooms ? 10 : -10;
   if (l.rentPcm) {
     s += 5;
@@ -55,8 +81,8 @@ function score(l: Listing, req: SearchRequest, benchPcm?: number): number {
     const stayMonths = (Date.parse(req.checkOut) - Date.parse(req.checkIn)) / 86400000 / 30.44;
     s += l.minTenancyMonths <= Math.ceil(stayMonths) ? 10 : -5;
   }
-  if (req.furnished === "furnished" && l.furnished === "Unfurnished") s -= 10;
-  if (req.accessibility && req.accessibility !== "any") s += l.accessFit === "fit" ? 20 : -10;
+  if (needsOf(req).length) s += l.accessFit === "fit" ? 20 : -10;
+  for (const f of req.mustHave ?? []) s += l.amenities?.includes(FEATURE_LABEL[f]) ? 5 : -3;
   if (l.images?.length) s += 3;
   return Math.max(0, Math.min(100, Math.round(s)));
 }
@@ -72,18 +98,36 @@ function normUrl(u?: string): string | undefined {
 export function rankAndFilter(all: Listing[], req: SearchRequest, benchPcm?: number): Listing[] {
   const seen = new Map<string, Listing>();
   for (const l of all) {
-    // Hard filters: a known wrong bed count, or rent >15% over the ceiling.
-    if (l.bedrooms !== undefined && l.bedrooms !== req.bedrooms && l.kind === "listing") continue;
+    // Hard filters: a known wrong bed count, rent outside the range (15% slack over max), known mismatching type/furnishing/size/age.
+    if (l.kind === "listing" && l.bedrooms !== undefined && !bedOk(req, l.bedrooms)) continue;
     if (req.maxRentPcm && l.rentPcm && l.rentPcm > req.maxRentPcm * 1.15) continue;
+    if (req.minRentPcm && l.rentPcm && l.rentPcm < req.minRentPcm) continue;
     if (req.bathrooms && l.bathrooms !== undefined && l.bathrooms < req.bathrooms) l.flags.push(`only ${l.bathrooms} bath`);
-    if (req.furnished === "furnished" && l.furnished === "Unfurnished") l.flags.push("unfurnished — needs fit-out");
-    // Accessibility: drop clear mismatches (e.g. 3rd floor with no lift), flag unknowns to check with the agent.
-    if (req.accessibility && req.accessibility !== "any") {
+    if (req.propertyTypes && l.propertyType && !req.propertyTypes.includes(l.propertyType as any)) continue;
+    if (req.minSizeSqFt && l.sizeSqFt && l.sizeSqFt < req.minSizeSqFt) continue;
+    if (req.addedWithinDays && l.addedOn && Date.parse(l.addedOn) < Date.now() - (req.addedWithinDays + 1) * 86400000) continue;
+    if (req.furnishing) {
+      const fc = furnishClass(l.furnished);
+      if (fc && fc !== "flexible" && !req.furnishing.includes(fc)) continue;
+      if (!fc && req.strict) continue;
+    }
+    // Accessibility (every selected need) and must-haves (every selected feature):
+    // clear "no" → dropped; not stated → flagged "check" (or dropped in strict mode).
+    const needs = needsOf(req);
+    if (needs.length) {
       const a = (l as any)._access ?? detectAccess(l.title, l.address, l.snippet);
-      l.accessFit = accessFit(a, req.accessibility);
+      const fits = needs.map((nd) => accessFit(a, nd));
+      l.accessFit = fits.includes("no") ? "no" : fits.includes("unknown") ? "unknown" : "fit";
       if (l.accessFit === "no") continue;
-      if (l.accessFit === "unknown") l.flags.push("access not stated — check");
-      else l.flags.push(req.accessibility === "ground_floor" ? "ground floor ✓" : req.accessibility === "wheelchair" ? "wheelchair signals ✓" : "step-free ✓");
+      if (l.accessFit === "unknown" && req.strict) continue;
+      needs.forEach((nd, i) => l.flags.push(fits[i] === "fit" ? ACCESS_LABEL[nd] : `${nd.replace("_", " ")} not stated — check`));
+    }
+    if (req.mustHave?.length) {
+      const feats = (l as any)._feat ?? detectFeatures(`${l.title} ${l.snippet ?? ""}`);
+      if (req.mustHave.some((f: Feature) => feats[f] === "no")) continue;
+      const missing = req.mustHave.filter((f: Feature) => feats[f] !== "yes");
+      if (missing.length && req.strict) continue;
+      for (const f of req.mustHave) l.flags.push(feats[f] === "yes" ? `${FEATURE_LABEL[f]} ✓` : `${FEATURE_LABEL[f]} not stated — check`);
     }
     const key = normUrl(l.url) ?? `${l.address}|${l.rentPcm}`;
     const prev = seen.get(key);
@@ -173,11 +217,16 @@ export async function runSearch(req: SearchRequest, env: Env): Promise<SearchRes
   const benchPcm = bench?.avgPcm;
   const placed = await localise([...(apify ?? []), ...(r2r ?? [])], geo, req);
   const listings = rankAndFilter(placed, req, benchPcm);
-  for (const l of listings) delete (l as any)._access;
-  if (req.accessibility && req.accessibility !== "any") {
+  for (const l of listings) { delete (l as any)._access; delete (l as any)._feat; }
+  const needs = needsOf(req);
+  if (needs.length) {
     const fit = listings.filter((l) => l.accessFit === "fit").length;
-    warnings.push(`Accessibility (${req.accessibility.replace("_", " ")}): ${fit} listing(s) state it; ${listings.length - fit} don't say either way. This is read from listing text — always confirm with the agent/landlord.`);
+    warnings.push(`Accessibility (${needs.map((x) => x.replace("_", " ")).join(" + ")}): ${fit} listing(s) state it; ${listings.length - fit} don't say either way. This is read from listing text — always confirm with the agent/landlord.`);
     if (req.bedrooms >= 3) warnings.push("Accessible 3+ beds are scarce as flats — bungalows and ground-floor maisonettes are flagged; consider widening the radius.");
+  }
+  if (req.mustHave?.length) {
+    const all = listings.filter((l) => req.mustHave!.every((f) => l.amenities?.includes(FEATURE_LABEL[f]))).length;
+    warnings.push(`Must-haves (${req.mustHave.map((f) => FEATURE_LABEL[f]).join(", ")}): ${all} listing(s) state all of them${req.strict ? "" : "; the rest don't say — flagged to check"}. Only OpenRent filters these at source; other portals are read from the listing text.`);
   }
   // ONS official area average (free; refreshed monthly into KV by the cron trigger).
   let ons: ReturnType<typeof onsLookup> = null;
@@ -202,7 +251,7 @@ export async function runSearch(req: SearchRequest, env: Env): Promise<SearchRes
   const apifyFail = statuses.find((st) => st.source === "apify" && !st.ok && st.error);
   if (apifyFail) warnings.push(/401|token/i.test(apifyFail.error!) ? "Apify rejected the APIFY_TOKEN — re-set it with `npx wrangler secret put APIFY_TOKEN` (paste only the apify_api_… value, no quotes/spaces)." : `Rightmove/Zoopla search failed: ${apifyFail.error!.slice(0, 200)}`);
   for (const e of ((apify as any)?.errors ?? []) as string[]) warnings.push(`One portal failed: ${e.slice(0, 160)}`);
-  if (req.bedrooms >= 5) warnings.push("5–6 bed stock is thin on lettings portals; also consider two adjacent smaller units.");
+  if ((req.bedroomOptions?.[0] ?? req.bedrooms) >= 5) warnings.push("5–6 bed stock is thin on lettings portals; also consider two adjacent smaller units.");
 
   return {
     request: req,

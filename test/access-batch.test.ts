@@ -25,8 +25,8 @@ const csv = `Postcode,Arrival,Departure,Bed type,Budget,Access,Client,Enquiry ID
 const rows = await parseSheet(new TextEncoder().encode(csv).buffer);
 assert.equal(rows.length, 2);
 const bodies = rowsToBodies(rows);
-assert.deepEqual([bodies[0].location, bodies[0].checkIn, bodies[0].checkOut, bodies[0].bedrooms, bodies[0].maxRentPcm, bodies[0].accessibility, bodies[0].enquiryRef],
+assert.deepEqual([bodies[0].location, bodies[0].checkIn, bodies[0].checkOut, bodies[0].bedrooms, bodies[0].maxRentPcm, bodies[0].accessNeeds, bodies[0].enquiryRef],
   ["Canary Wharf, London", "2026-11-01", "2027-02-01", "2", "3500", "ground_floor", "ENQ-1"]);
-assert.equal(bodies[1].bedrooms, "0"); assert.equal(bodies[1].accessibility, "wheelchair");
+assert.equal(bodies[1].bedrooms, "0"); assert.equal(bodies[1].accessNeeds, "wheelchair");
 assert.ok(validate(bodies[0]).req && validate(bodies[1]).req);
 console.log("ACCESS + BATCH OK");

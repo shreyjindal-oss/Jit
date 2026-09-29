@@ -12,6 +12,13 @@ export interface Env {
   APIFY_ZOOPLA_ACTOR?: string;
   APIFY_OTM_ACTOR?: string;
   APIFY_OPENRENT_ACTOR?: string;
+  APIFY_OPENRENT_MAX?: string; // OpenRent results per search (cost: ~$0.015 each)
+  SENDGRID_API_KEY?: string; // alerts email
+  ALERT_FROM_EMAIL?: string; // default noreply@thesqua.re
+  ALERT_EMAIL_DOMAINS?: string; // csv of allowed recipient domains
+  MAX_ACTIVE_ALERTS?: string;
+  MAX_ALERTS_PER_EMAIL?: string;
+  PUBLIC_URL?: string; // for links in emails
   APIFY_PORTALS?: string; // csv: rightmove,zoopla,onthemarket,openrent
   ONS_KV?: KVNamespace; // ONS average rents, refreshed monthly by the cron trigger
   APIFY_MAX_RESULTS?: string; // per portal per search
@@ -36,7 +43,17 @@ export interface SearchRequest {
   setupCost?: number; // furnishing / onboarding one-off cost estimate
   clientAccount?: string;
   enquiryRef?: string;
-  accessibility?: import("./access").AccessNeed; // any | ground_floor | step_free | wheelchair
+  accessibility?: import("./access").AccessNeed; // first selected need (kept for DB/back-compat)
+  // Multi-select filters (empty/undefined = any)
+  bedroomOptions?: number[]; // e.g. [2,3]; bedrooms = the smallest
+  furnishing?: import("./filters").Furnishing[];
+  propertyTypes?: import("./filters").PropType[];
+  accessNeeds?: import("./access").AccessNeed[]; // all must be met
+  mustHave?: import("./filters").Feature[]; // all must be met
+  minRentPcm?: number;
+  minSizeSqFt?: number;
+  addedWithinDays?: number; // 1 | 3 | 7 | 14
+  strict?: boolean; // drop listings that don't state a required feature/access (default: keep + flag)
 }
 
 export type SourceId = "propertydata" | "apify";
@@ -69,6 +86,10 @@ export interface Listing {
   floor?: string; // detected floor ("Ground", "3rd", "Bungalow", …)
   access?: string[]; // detected accessibility signals
   accessFit?: "fit" | "unknown" | "no";
+  propertyType?: string; // flat | house | bungalow (detected)
+  amenities?: string[]; // detected: parking, pets allowed, garden, balcony/terrace, bills included
+  sizeSqFt?: number;
+  addedOn?: string; // first listed (ISO) when the portal gives it
   score: number; // 0..100 match score
   flags: string[];
 }

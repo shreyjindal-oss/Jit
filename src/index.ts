@@ -3,6 +3,7 @@ import { runSearch, validate } from "./pipeline";
 import { html } from "./ui";
 import { getOns, refreshOns, storeOns } from "./ons";
 import { getSearch, listSearches, saveSearch, searchesToday } from "./db";
+import { createAlert, listAlerts, processAlertsTick, runAlert, stopAlert } from "./alerts";
 import { batchCsv, createBatch, getBatch, listBatches, processBatchTick, TEMPLATE_CSV } from "./batch";
 
 const COOKIE = "jit_auth";
@@ -149,17 +150,55 @@ export default {
       if (!authorised(request, env)) return json({ error: "unauthorised" }, 401);
       return json(await processBatchTick(env));
     }
+    // ---- alerts
+    if (url.pathname === "/api/alerts" && request.method === "POST") {
+      if (!authorised(request, env)) return json({ error: "unauthorised" }, 401);
+      const r = await createAlert(env, (await request.json().catch(() => ({}))) as any);
+      return json(r, r.error ? 400 : 200);
+    }
+    if (url.pathname === "/api/alerts" && request.method === "GET") {
+      if (!authorised(request, env)) return json({ error: "unauthorised" }, 401);
+      return json({ alerts: await listAlerts(env), limits: { maxActive: Number(env.MAX_ACTIVE_ALERTS || 20), maxPerEmail: Number(env.MAX_ALERTS_PER_EMAIL || 3), domains: env.ALERT_EMAIL_DOMAINS || "thesqua.re", email: !!env.SENDGRID_API_KEY } });
+    }
+    let am = url.pathname.match(/^\/api\/alerts\/([\w-]+)\/(stop|run)$/);
+    if (am && request.method === "POST") {
+      if (!authorised(request, env)) return json({ error: "unauthorised" }, 401);
+      if (am[2] === "stop") return json({ stopped: await stopAlert(env, am[1]) });
+      // Test run: run now without changing the schedule (counts toward the daily cap).
+      const a: any = await env.DB?.prepare(`SELECT * FROM alerts WHERE id = ?1`).bind(am[1]).first();
+      if (!a) return json({ error: "not found" }, 404);
+      if ((await searchesToday(env)) >= Number(env.MAX_SEARCHES_PER_DAY || 100)) return json({ error: "Daily search limit reached" }, 429);
+      try {
+        const r = await runAlert(env, a);
+        await env.DB!.prepare(`UPDATE alerts SET runs=runs+1, emails_sent=emails_sent+?2, last_new_count=?3, last_run_at=?4, last_error=NULL WHERE id=?1`).bind(a.id, r.emailed ? 1 : 0, r.newCount, new Date().toISOString()).run();
+        return json(r);
+      } catch (e: any) {
+        await env.DB!.prepare(`UPDATE alerts SET last_error=?2 WHERE id=?1`).bind(a.id, String(e?.message ?? e).slice(0, 500)).run();
+        return json({ error: String(e?.message ?? e) }, 500);
+      }
+    }
+    if (url.pathname === "/alerts/stop" && request.method === "GET") {
+      // Public one-click unsubscribe from the email (protected by the per-alert stop token).
+      const ok = await stopAlert(env, url.searchParams.get("id") || "", url.searchParams.get("t") || "");
+      return new Response(`<!doctype html><meta name=viewport content="width=device-width"><body style="font:16px system-ui;padding:40px;max-width:520px;margin:auto"><h2>${ok ? "Alert stopped" : "Alert already stopped or link invalid"}</h2><p>You won't receive further emails for this alert.</p></body>`, { headers: { "content-type": "text/html; charset=utf-8" } });
+    }
     return json({ error: "not found" }, 404);
   },
 
   /**
    * Cron triggers (wrangler.toml):
-   *   "* * * * *"   → process queued bulk-upload rows
+   *   "* * * * *"   → process queued bulk-upload rows + run one due alert
    *   "0 6 25 * *"  → try the ONS refresh (the GitHub Action is the reliable path)
    */
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     if (event.cron === "* * * * *") {
-      ctx.waitUntil(processBatchTick(env).then((r) => r.processed && console.log("batch tick", JSON.stringify(r))).catch((e) => console.error("batch tick failed", String(e?.message ?? e))));
+      // One heavy job per minute: a due alert takes the tick; otherwise process a bulk row. Keeps Apify concurrency low.
+      ctx.waitUntil(
+        processAlertsTick(env)
+          .catch((e) => (console.error("alert tick failed", String(e?.message ?? e)), {} as { ran?: string }))
+          .then((a) => (a.ran ? (console.log("alert tick", JSON.stringify(a)), undefined) : processBatchTick(env).then((r) => r.processed && console.log("batch tick", JSON.stringify(r)))))
+          .catch((e) => console.error("batch tick failed", String(e?.message ?? e))),
+      );
       return;
     }
     ctx.waitUntil(
