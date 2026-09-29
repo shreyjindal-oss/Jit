@@ -99,16 +99,16 @@ export async function runAlert(env: Env, a: any, search: SearchFn = runSearch): 
   const { results } = await env.DB!.prepare(`SELECT url_key FROM alert_seen WHERE alert_id = ?1`).bind(a.id).all<any>();
   const seen = new Set(results.map((r) => r.url_key));
   const fresh = res.listings.filter((l) => !seen.has(keyOf(l)));
-  const now = iso(new Date());
-  const stmts = fresh.map((l) => env.DB!.prepare(`INSERT OR IGNORE INTO alert_seen (alert_id, url_key, first_seen) VALUES (?1,?2,?3)`).bind(a.id, keyOf(l), now));
-  for (let i = 0; i < stmts.length; i += 90) await env.DB!.batch(stmts.slice(i, i + 90));
-
   let emailed = false;
   if (fresh.length) {
-    const first = (a.runs ?? 0) === 0;
+    const first = (a.emails_sent ?? 0) === 0; // first successful email = "what's available now"
     await sendAlertEmail(env, a, req, fresh.slice(0, 15), fresh.length, first, res.ons?.avgPcm);
     emailed = true;
   }
+  // Mark as sent only after the email went out, so a failed send (bad key, SendGrid down) is retried next run.
+  const now = iso(new Date());
+  const stmts = fresh.map((l) => env.DB!.prepare(`INSERT OR IGNORE INTO alert_seen (alert_id, url_key, first_seen) VALUES (?1,?2,?3)`).bind(a.id, keyOf(l), now));
+  for (let i = 0; i < stmts.length; i += 90) await env.DB!.batch(stmts.slice(i, i + 90));
   return { newCount: fresh.length, emailed };
 }
 

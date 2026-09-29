@@ -73,3 +73,21 @@ await processAlertsTick(env, fakeSearch);
 const all = await listAlerts(env);
 assert.ok(all.every((a) => a.status !== "active")); assert.equal(all.find((a) => a.id === a1.id).status, "stopped");
 console.log("ALERTS OK");
+
+// A failed send must not mark listings as seen (they're retried next run).
+{
+  const a2 = await createAlert(env, { ...ok, email: "retry@thesqua.re" }); assert.ok(a2.id, JSON.stringify(a2));
+  db.prepare(`UPDATE alerts SET next_run_at = ? WHERE id = ?`).run(new Date(Date.now() - 1000).toISOString(), a2.id!);
+  globalThis.fetch = (async () => new Response('{"errors":[{"message":"bad key"}]}', { status: 401 })) as any;
+  let r2 = await processAlertsTick(env, fakeSearch);
+  assert.equal(r2.ran, a2.id);
+  const row2: any = db.prepare(`SELECT * FROM alerts WHERE id = ?`).get(a2.id!);
+  assert.match(row2.last_error, /SendGrid 401/); assert.equal(row2.emails_sent, 0);
+  assert.equal((db.prepare(`SELECT COUNT(*) n FROM alert_seen WHERE alert_id = ?`).get(a2.id!) as any).n, 0);
+  const sent2: any[] = [];
+  globalThis.fetch = (async (_u: string, init: any) => { sent2.push(JSON.parse(init.body)); return new Response("", { status: 202 }); }) as any;
+  db.prepare(`UPDATE alerts SET next_run_at = ? WHERE id = ?`).run(new Date(Date.now() - 1000).toISOString(), a2.id!);
+  r2 = await processAlertsTick(env, fakeSearch);
+  assert.equal(r2.newCount, 3); assert.equal(sent2.length, 1); assert.doesNotMatch(sent2[0].subject, /new ·/); // still the "current listings" email
+  console.log("ALERTS RETRY OK");
+}
