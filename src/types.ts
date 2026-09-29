@@ -16,6 +16,10 @@ export interface Env {
   ONS_KV?: KVNamespace; // ONS average rents, refreshed monthly by the cron trigger
   APIFY_MAX_RESULTS?: string; // per portal per search
   APIFY_RM_DETAILS?: string; // "true" = open each Rightmove listing (slower, adds furnished/available date)
+  DB?: D1Database; // saved searches, results, bulk uploads
+  MAX_SEARCHES_PER_DAY?: string; // cost guard (UI + bulk combined)
+  MAX_BATCH_ROWS?: string; // cost guard per uploaded sheet
+  BATCH_CONCURRENCY?: string; // rows processed per cron tick
 }
 
 export interface SearchRequest {
@@ -32,6 +36,7 @@ export interface SearchRequest {
   setupCost?: number; // furnishing / onboarding one-off cost estimate
   clientAccount?: string;
   enquiryRef?: string;
+  accessibility?: import("./access").AccessNeed; // any | ground_floor | step_free | wheelchair
 }
 
 export type SourceId = "propertydata" | "apify";
@@ -60,6 +65,10 @@ export interface Listing {
   lng?: number;
   snippet?: string;
   minTenancyMonths?: number; // OpenRent: landlord's minimum tenancy
+  images?: string[]; // photo URLs (portal CDNs), first = main
+  floor?: string; // detected floor ("Ground", "3rd", "Bungalow", …)
+  access?: string[]; // detected accessibility signals
+  accessFit?: "fit" | "unknown" | "no";
   score: number; // 0..100 match score
   flags: string[];
 }

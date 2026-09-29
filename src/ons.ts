@@ -36,9 +36,9 @@ export interface OnsBenchmark {
 
 // ---------------------------------------------------------------- minimal zip / xlsx reader
 
-interface ZipEntry { name: string; method: number; csize: number; offset: number }
+export interface ZipEntry { name: string; method: number; csize: number; offset: number }
 
-function zipEntries(buf: ArrayBuffer): ZipEntry[] {
+export function zipEntries(buf: ArrayBuffer): ZipEntry[] {
   const dv = new DataView(buf);
   let eocd = -1;
   for (let i = buf.byteLength - 22; i >= Math.max(0, buf.byteLength - 70000); i--) {
@@ -67,7 +67,7 @@ function entryStream(buf: ArrayBuffer, e: ZipEntry): ReadableStream<string> {
   return bytes.pipeThrough(new TextDecoderStream());
 }
 
-async function entryText(buf: ArrayBuffer, e: ZipEntry): Promise<string> {
+export async function entryText(buf: ArrayBuffer, e: ZipEntry): Promise<string> {
   let s = "";
   const r = entryStream(buf, e).getReader();
   for (;;) { const { done, value } = await r.read(); if (done) break; s += value; }

@@ -20,16 +20,25 @@ APIFY_PORTALS = "rightmove,zoopla,onthemarket,openrent"
 APIFY_MAX_RESULTS = "30"
 # "true" opens each Rightmove listing for furnished / available-from (≈3x slower)
 APIFY_RM_DETAILS = "false"
+# Cost guards (each search ≈ $0.50 of Apify credit)
+MAX_SEARCHES_PER_DAY = "100"   # UI + bulk combined; beyond this searches are refused / bulk rows wait until tomorrow
+MAX_BATCH_ROWS = "50"          # rows per uploaded sheet
+BATCH_CONCURRENCY = "2"        # bulk rows processed per minute
 
 # Monthly ONS refresh: 06:00 UTC on the 25th (ONS publishes mid-month). Needs Workers Paid (the
 # parse takes a few seconds of CPU). Test locally: npx wrangler dev --test-scheduled, then
 # curl "http://127.0.0.1:8787/__scheduled?cron=0+6+25+*+*"
 [triggers]
-crons = ["0 6 25 * *"]
+crons = ["* * * * *", "0 6 25 * *"] # every minute: process bulk-upload rows · 25th: ONS refresh attempt
 
 # ONS average rents live in KV (binding ONS_KV). Create it once with:
 #   npx wrangler kv namespace create ONS_KV --binding ONS_KV --update-config
 # which appends a [[kv_namespaces]] block below. (Without it the tool still works, minus the ONS figure.)
+
+# Saved searches + bulk uploads live in D1 (binding DB). Create once:
+#   npx wrangler d1 create jit-inventory
+# paste the [[d1_databases]] block it prints at the end of this file, add  migrations_dir = "migrations"  to it, then:
+#   npx wrangler d1 migrations apply jit-inventory --remote
 
 # Secrets — NOT here. Locally: .dev.vars. Production:
 #   npx wrangler secret put PROPERTYDATA_KEY
@@ -40,3 +49,8 @@ crons = ["0 6 25 * *"]
 binding = "ONS_KV"
 id = "4f14c9f0d3ac44318555bdb14da9b482"
 
+[[d1_databases]]
+binding = "DB"
+database_name = "jit-inventory"
+database_id = "fceafb7b-a975-410a-bff2-ff247e3e5427"
+migrations_dir = "migrations"

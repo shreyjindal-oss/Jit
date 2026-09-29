@@ -1,5 +1,6 @@
 import type { Env, GeoPoint, Listing, SearchRequest } from "../types";
 import { milesBetween, slug } from "../geo";
+import { accessFit, detectAccess } from "../access";
 import { num, parseAvailable, parseBathrooms, parseBedrooms, parseFurnished, parseRentPcm } from "../parse";
 
 /**
@@ -48,6 +49,19 @@ function isRental(it: any, priceText: string): boolean {
 
 type Portal = "Rightmove" | "Zoopla" | "OnTheMarket" | "OpenRent";
 
+/** Photo URLs from any actor shape: string[], {url}[], {default,webp}[], plus single mainImage/imageUrl. */
+function imagesOf(it: any, max = 12): string[] {
+  const out: string[] = [];
+  const add = (v: any) => {
+    const u = typeof v === "string" ? v : v?.url ?? v?.default ?? v?.srcUrl ?? v?.src;
+    if (typeof u === "string" && /^https?:\/\//.test(u) && !/staticMap|map_image|epc|floorplan/i.test(u) && !out.includes(u)) out.push(u.replace(":443/", "/"));
+  };
+  add(it.mainImage); add(it.imageUrl);
+  for (const v of Array.isArray(it.images) ? it.images : []) add(v);
+  for (const v of Array.isArray(it.propertyImages?.images) ? it.propertyImages.images : []) add(v);
+  return out.slice(0, max);
+}
+
 function normalise(it: any, portal: Portal, geo: GeoPoint): Listing | null {
   const priceText = String(
     pick(it, "displayPrice", "priceLabel", "price.displayPrices.0.displayPrice", "priceText") ??
@@ -73,6 +87,8 @@ function normalise(it: any, portal: Portal, geo: GeoPoint): Listing | null {
     ? [pick(it, "address"), pick(it, "location"), pick(it, "postcode")].filter(Boolean).join(", ") || title
     : pick(it, "displayAddress", "address");
   const flags: string[] = [];
+  const features = [pick(it, "keyFeatures", "features", "highlights", "tags")].flat().filter((x: any) => typeof x === "string").join(". ");
+  const access = detectAccess(title, pick(it, "summary"), pick(it, "description"), features, address, it.propertyType, it.propertySubType);
   const minTen = num(it.minimum_tenancy_months);
   if (minTen !== undefined) flags.push(`min tenancy ${minTen} mo`);
   if (portal === "OpenRent") flags.push("landlord-direct");
@@ -100,6 +116,10 @@ function normalise(it: any, portal: Portal, geo: GeoPoint): Listing | null {
     score: 0,
     flags,
     minTenancyMonths: minTen,
+    images: imagesOf(it),
+    floor: access.floor,
+    access: access.features,
+    _access: access,
   } as Listing;
 }
 
@@ -113,6 +133,7 @@ export async function apifyListings(req: SearchRequest, geo: GeoPoint, env: Env)
   const radius = req.radiusMiles ?? 3;
   const place = req.location.split(",")[0].trim();
   const isPostcode = /^[A-Z]{1,2}\d/i.test(place);
+  const needsText = !!req.accessibility && req.accessibility !== "any";
   const portals = new Set((env.APIFY_PORTALS || "rightmove,zoopla,onthemarket,openrent").split(",").map((s) => s.trim().toLowerCase()));
 
   const rightmove = async () => {
@@ -124,7 +145,8 @@ export async function apifyListings(req: SearchRequest, geo: GeoPoint, env: Env)
       radius: rmRadius(radius),
       includeLetAgreed: false,
       // Detail pages add furnish type / let-available date but make runs ~3x slower.
-      includePropertyDetails: env.APIFY_RM_DETAILS === "true",
+      // Accessibility needs the full description/key features, so details are forced on then.
+      includePropertyDetails: env.APIFY_RM_DETAILS === "true" || needsText,
       maxResults: max,
     }, env);
     return items.filter((i) => (i.type ?? "property") === "property").map((i) => normalise(i, "Rightmove", geo)).filter(Boolean) as Listing[];
@@ -132,7 +154,7 @@ export async function apifyListings(req: SearchRequest, geo: GeoPoint, env: Env)
 
   const zoopla = async () => {
     const actor = env.APIFY_ZOOPLA_ACTOR || "scrapesage~zoopla-scraper";
-    const base = { section: "to-rent", minBeds: beds, maxBeds: beds, ...(req.maxRentPcm ? { maxPrice: req.maxRentPcm } : {}), includeDetails: false, maxPagesPerLocation: Math.max(1, Math.ceil(max / 25)) };
+    const base = { section: "to-rent", minBeds: beds, maxBeds: beds, ...(req.maxRentPcm ? { maxPrice: req.maxRentPcm } : {}), includeDetails: needsText, maxPagesPerLocation: Math.max(1, Math.ceil(max / 25)) };
     // Zoopla wants its own location slug; try the area, then fall back to the wider town/outcode.
     const candidates = [...new Set([isPostcode && geo.outcode ? geo.outcode.toLowerCase() : slug(place), geo.town ? slug(geo.town) : ""].filter(Boolean))];
     for (const loc of candidates) {
@@ -166,7 +188,7 @@ export async function apifyListings(req: SearchRequest, geo: GeoPoint, env: Env)
       search_radius_km: Math.max(1, Math.round(radius * 1.609)),
       onlyAvailableProperties: true,
       scrapeDetails: true, // needed for address, landlord name, deposit, EPC
-      includeImages: false,
+      includeImages: true,
       reportDelisted: false,
       includeDuplicates: true,
       maxItems: Math.min(max, 20), // ~$0.015 per listing

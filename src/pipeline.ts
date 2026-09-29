@@ -5,6 +5,7 @@ import { economics } from "./economics";
 import { getOns, onsLookup } from "./ons";
 import { rentBenchmark, rentToRent } from "./sources/propertydata";
 import { apifyListings } from "./sources/apify";
+import { accessFit, detectAccess, type AccessNeed } from "./access";
 
 const ISO = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -24,6 +25,7 @@ export function validate(body: any): { req?: SearchRequest; error?: string } {
     setupCost: n(body?.setupCost),
     clientAccount: body?.clientAccount ? String(body.clientAccount) : undefined,
     enquiryRef: body?.enquiryRef ? String(body.enquiryRef) : undefined,
+    accessibility: (["ground_floor", "step_free", "wheelchair"].includes(body?.accessibility) ? body.accessibility : "any") as AccessNeed,
   };
   if (!req.location) return { error: "location is required" };
   if (!ISO.test(req.checkIn) || !ISO.test(req.checkOut)) return { error: "checkIn/checkOut must be YYYY-MM-DD" };
@@ -54,6 +56,8 @@ function score(l: Listing, req: SearchRequest, benchPcm?: number): number {
     s += l.minTenancyMonths <= Math.ceil(stayMonths) ? 10 : -5;
   }
   if (req.furnished === "furnished" && l.furnished === "Unfurnished") s -= 10;
+  if (req.accessibility && req.accessibility !== "any") s += l.accessFit === "fit" ? 20 : -10;
+  if (l.images?.length) s += 3;
   return Math.max(0, Math.min(100, Math.round(s)));
 }
 
@@ -73,6 +77,14 @@ export function rankAndFilter(all: Listing[], req: SearchRequest, benchPcm?: num
     if (req.maxRentPcm && l.rentPcm && l.rentPcm > req.maxRentPcm * 1.15) continue;
     if (req.bathrooms && l.bathrooms !== undefined && l.bathrooms < req.bathrooms) l.flags.push(`only ${l.bathrooms} bath`);
     if (req.furnished === "furnished" && l.furnished === "Unfurnished") l.flags.push("unfurnished — needs fit-out");
+    // Accessibility: drop clear mismatches (e.g. 3rd floor with no lift), flag unknowns to check with the agent.
+    if (req.accessibility && req.accessibility !== "any") {
+      const a = (l as any)._access ?? detectAccess(l.title, l.address, l.snippet);
+      l.accessFit = accessFit(a, req.accessibility);
+      if (l.accessFit === "no") continue;
+      if (l.accessFit === "unknown") l.flags.push("access not stated — check");
+      else l.flags.push(req.accessibility === "ground_floor" ? "ground floor ✓" : req.accessibility === "wheelchair" ? "wheelchair signals ✓" : "step-free ✓");
+    }
     const key = normUrl(l.url) ?? `${l.address}|${l.rentPcm}`;
     const prev = seen.get(key);
     // Same property from several sources: earlier (richer) source wins per field; later ones fill gaps.
@@ -161,6 +173,12 @@ export async function runSearch(req: SearchRequest, env: Env): Promise<SearchRes
   const benchPcm = bench?.avgPcm;
   const placed = await localise([...(apify ?? []), ...(r2r ?? [])], geo, req);
   const listings = rankAndFilter(placed, req, benchPcm);
+  for (const l of listings) delete (l as any)._access;
+  if (req.accessibility && req.accessibility !== "any") {
+    const fit = listings.filter((l) => l.accessFit === "fit").length;
+    warnings.push(`Accessibility (${req.accessibility.replace("_", " ")}): ${fit} listing(s) state it; ${listings.length - fit} don't say either way. This is read from listing text — always confirm with the agent/landlord.`);
+    if (req.bedrooms >= 3) warnings.push("Accessible 3+ beds are scarce as flats — bungalows and ground-floor maisonettes are flagged; consider widening the radius.");
+  }
   // ONS official area average (free; refreshed monthly into KV by the cron trigger).
   let ons: ReturnType<typeof onsLookup> = null;
   if (geo) {
