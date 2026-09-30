@@ -41,10 +41,14 @@ export async function geocode(input: string): Promise<GeoPoint | null> {
   }
   // Place name
   // postcodes.io matches on the place name only, so "Canary Wharf, London" -> retry with "Canary Wharf".
+  // Place names repeat across the UK ("Kensington" is also in Liverpool), so honour qualifiers after the comma:
+  // "Kensington, London" must pick a place whose region/county/borough mentions London.
+  const quals = q.split(",").slice(1).map((x) => x.trim().toLowerCase()).filter((x) => x && !/^(uk|united kingdom|england|gb)$/.test(x));
+  const fits = (p: any) => !quals.length || quals.some((w) => [p.region, p.county_unitary, p.district_borough, p.name_1, p.name_2, p.country].filter(Boolean).join(" ").toLowerCase().includes(w));
   let place: any;
   for (const term of [...new Set([q, q.split(",")[0].trim()])]) {
-    const pj = await getJson(`https://api.postcodes.io/places?q=${encodeURIComponent(term)}&limit=1`).catch(() => null);
-    place = pj?.result?.[0];
+    const pj = await getJson(`https://api.postcodes.io/places?q=${encodeURIComponent(term)}&limit=20`).catch(() => null);
+    place = (pj?.result ?? []).find(fits);
     if (place) break;
   }
   if (place?.latitude) {
