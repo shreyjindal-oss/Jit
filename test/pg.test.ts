@@ -95,3 +95,47 @@ console.log("POSTGRES OK");
   assert.equal(new Set(ids).size, ids.length);
   console.log("D1 IMPORT OK");
 }
+
+// Bulk rows when Apify is out of credit: row fails (no misleading "0 listings" saved search); cancel + retry
+{
+  const { cancelBatch, retryBatch, listBatches } = await import("../src/batch");
+  const d2 = (n: number) => new Date(Date.now() + n * 864e5).toISOString().slice(0, 10);
+  await exec(`INSERT INTO batches (id, created_at, filename, total) VALUES ('b2', $1, 'jit2.csv', 3)`, [new Date().toISOString()]);
+  for (const n of [2, 3, 4]) await exec(`INSERT INTO batch_rows (batch_id, row_no, request_json) VALUES ('b2', $1, $2)`, [n, JSON.stringify({ location: "E15", checkIn: d2(10), checkOut: d2(60), bedrooms: [4, 5] })]);
+  const before = (await exec(`SELECT COUNT(*) n FROM searches`, [])).rows[0].n;
+  globalThis.fetch = (async (u: string) => {
+    if (String(u).includes("apify.com")) return new Response('{"error":{"type":"platform-feature-disabled","message":"Monthly usage hard limit exceeded"}}', { status: 403 });
+    if (String(u).includes("/outcodes/")) return Response.json({ result: { outcode: "E15", latitude: 51.54, longitude: 0, admin_district: ["Newham"] } });
+    return Response.json({ result: [{ postcode: "E15 1AA", outcode: "E15", admin_district: "Newham", region: "London", codes: { admin_district: "E09000025" } }] });
+  }) as any;
+  const env2 = { ...env, APIFY_TOKEN: "t", ENABLED_SOURCES: "apify", BATCH_CONCURRENCY: "1" };
+  await processBatchTick(env2);
+  let b2: any = await getBatch(env2, "b2");
+  assert.equal(b2.rows[0].status, "error"); assert.match(b2.rows[0].error, /Apify credit\/limit reached/);
+  assert.equal((await exec(`SELECT COUNT(*) n FROM searches`, [])).rows[0].n, before); // nothing saved
+  assert.equal((await cancelBatch(env2, "b2")).cancelled, 2);
+  assert.equal((await processBatchTick(env2)).processed, 0); // cancelled rows never run
+  const lb: any = (await listBatches(env2)).find((x: any) => x.id === "b2");
+  assert.deepEqual([lb.errors, lb.cancelled, lb.pending, lb.status], [1, 2, 0, "cancelled"]);
+  assert.equal((await retryBatch(env2, "b2")).requeued, 3);
+  b2 = await getBatch(env2, "b2"); assert.ok(b2.rows.every((r: any) => r.status === "pending" && r.attempts === 0)); assert.equal(b2.status, "queued");
+  // "Retry empty" also re-queues rows that finished with 0 listings
+  await exec(`UPDATE batch_rows SET status='done', listing_count=0 WHERE batch_id='b2' AND row_no=2`, []);
+  await cancelBatch(env2, "b2");
+  assert.equal((await retryBatch(env2, "b2")).requeued, 2);
+  assert.equal((await retryBatch(env2, "b2", true)).requeued, 1);
+  console.log("BATCH CANCEL/RETRY OK");
+}
+
+// Housekeeping on Postgres
+{
+  const { deriveSearch, setArchived, activeIds } = await import("../src/db");
+  const id2 = (await saveSearch(env, res, { source: "batch" }))!;
+  const d = (await deriveSearch(env, id2, { bedrooms: [3] }))!; assert.equal(d.kept, 1);
+  const n = (await activeIds(env, "searches")).filter((x) => x !== d.id);
+  await setArchived(env, "searches", n, true);
+  assert.deepEqual((await listSearches(env, 500)).map((s: any) => s.id), [d.id]);
+  const al = (await activeIds(env, "alerts")); await setArchived(env, "alerts", al, true);
+  assert.equal((await listAlerts(env)).length, 0);
+  console.log("PG ARCHIVE OK");
+}

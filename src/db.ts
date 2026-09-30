@@ -11,7 +11,7 @@ function median(xs: number[]): number | null {
   return s.length % 2 ? s[m] : Math.round((s[m - 1] + s[m]) / 2);
 }
 
-export async function saveSearch(env: Env, res: SearchResponse, opts: { source: "ui" | "batch" | "api" | "alert"; batchId?: string; durationMs?: number }): Promise<string | null> {
+export async function saveSearch(env: Env, res: SearchResponse, opts: { source: "ui" | "batch" | "api" | "alert" | "curated"; batchId?: string; durationMs?: number }): Promise<string | null> {
   if (!env.DB) return null;
   const id = newId();
   const r = res.request;
@@ -47,15 +47,54 @@ export async function saveSearch(env: Env, res: SearchResponse, opts: { source: 
   return id;
 }
 
-export async function listSearches(env: Env, limit = 50, q?: string): Promise<any[]> {
+export async function listSearches(env: Env, limit = 50, q?: string, archived = false): Promise<any[]> {
   if (!env.DB) return [];
-  const where = q ? `WHERE location LIKE ?2 OR outcode LIKE ?2 OR enquiry_ref LIKE ?2 OR client_account LIKE ?2` : "";
+  const conds = [archived ? "archived_at IS NOT NULL" : "archived_at IS NULL"];
+  if (q) conds.push("(location LIKE ?2 OR outcode LIKE ?2 OR enquiry_ref LIKE ?2 OR client_account LIKE ?2)");
   const stmt = env.DB.prepare(
     `SELECT id, created_at, source, batch_id, location, outcode, la_name, bedrooms, check_in, check_out, accessibility, client_account, enquiry_ref,
-            listing_count, median_rent_pcm, ons_pcm FROM searches ${where} ORDER BY created_at DESC LIMIT ?1`,
+            listing_count, median_rent_pcm, ons_pcm, archived_at FROM searches WHERE ${conds.join(" AND ")} ORDER BY created_at DESC LIMIT ?1`,
   );
   const { results } = await (q ? stmt.bind(limit, `%${q}%`) : stmt.bind(limit)).all();
   return results;
+}
+
+/**
+ * Save a cleaned copy of a saved search that keeps only listings with the given bed counts
+ * (e.g. an all-sizes run trimmed to 4 & 5 bed). The original is left untouched (archive it separately).
+ */
+export async function deriveSearch(env: Env, id: string, opts: { bedrooms: number[]; enquiryRef?: string; clientAccount?: string }): Promise<{ id: string | null; kept: number } | null> {
+  const s: any = await getSearch(env, id);
+  if (!s) return null;
+  const beds = [...new Set(opts.bedrooms)].sort((a, b) => a - b);
+  const listings = s.listings.filter((l: any) => l.kind !== "search_page" && l.bedrooms !== undefined && beds.includes(l.bedrooms));
+  const { id: _id, savedAt: _saved, ...rest } = s;
+  const request = { ...s.request, bedrooms: beds[0], bedroomOptions: beds.length > 1 ? beds : undefined,
+    ...(opts.enquiryRef ? { enquiryRef: opts.enquiryRef } : {}), ...(opts.clientAccount ? { clientAccount: opts.clientAccount } : {}) };
+  const warnings = [...(s.warnings ?? []), `Filtered copy of an earlier search (${s.savedAt?.slice(0, 10)}), keeping ${beds.join(" & ")} bed listings only.`];
+  const newId = await saveSearch(env, { ...rest, request, listings, warnings } as any, { source: "curated" });
+  return { id: newId, kept: listings.length };
+}
+
+/** Archive / restore saved searches, bulk uploads and alerts (archived alerts are also stopped). Nothing is deleted. */
+export async function setArchived(env: Env, kind: "searches" | "batches" | "alerts", ids: string[], archived: boolean): Promise<number> {
+  if (!env.DB || !ids.length) return 0;
+  const now = new Date().toISOString();
+  let n = 0;
+  for (const id of ids) {
+    const r: any = await env.DB.prepare(`UPDATE ${kind} SET archived_at = ?2 WHERE id = ?1`).bind(id, archived ? now : null).run();
+    n += r?.meta?.changes ?? 1;
+    if (archived && kind === "alerts") await env.DB.prepare(`UPDATE alerts SET status='stopped' WHERE id=?1 AND status='active'`).bind(id).run();
+    if (archived && kind === "batches") await env.DB.prepare(`UPDATE batch_rows SET status='cancelled', error='archived' WHERE batch_id=?1 AND status='pending'`).bind(id).run();
+  }
+  return n;
+}
+
+/** IDs of everything not archived (for "archive all except …"). */
+export async function activeIds(env: Env, kind: "searches" | "batches" | "alerts"): Promise<string[]> {
+  if (!env.DB) return [];
+  const { results } = await env.DB.prepare(`SELECT id FROM ${kind} WHERE archived_at IS NULL`).all<any>();
+  return results.map((r) => r.id);
 }
 
 /** Rebuild a stored search into the same shape /api/search returns. */

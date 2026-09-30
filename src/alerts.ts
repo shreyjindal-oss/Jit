@@ -74,7 +74,7 @@ export async function listAlerts(env: Env): Promise<any[]> {
   if (!env.DB) return [];
   const { results } = await env.DB.prepare(
     `SELECT id, created_at, name, email, request_json, frequency_days, start_date, end_date, next_run_at, last_run_at, runs, emails_sent,
-            last_new_count, last_error, status FROM alerts ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END, created_at DESC LIMIT 100`,
+            last_new_count, last_error, status FROM alerts WHERE archived_at IS NULL ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END, created_at DESC LIMIT 100`,
   ).all<any>();
   return results.map((a) => ({ ...a, request: JSON.parse(a.request_json), request_json: undefined }));
 }

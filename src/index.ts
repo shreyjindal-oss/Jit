@@ -2,9 +2,9 @@ import type { Env } from "./types";
 import { runSearch, validate } from "./pipeline";
 import { html } from "./ui";
 import { getOns, refreshOns, storeOns } from "./ons";
-import { getSearch, listSearches, saveSearch, searchesToday } from "./db";
+import { activeIds, deriveSearch, getSearch, listSearches, saveSearch, searchesToday, setArchived } from "./db";
 import { createAlert, listAlerts, processAlertsTick, runAlert, stopAlert } from "./alerts";
-import { batchCsv, createBatch, getBatch, listBatches, processBatchTick, TEMPLATE_CSV } from "./batch";
+import { batchCsv, cancelBatch, createBatch, getBatch, listBatches, processBatchTick, retryBatch, TEMPLATE_CSV } from "./batch";
 
 const COOKIE = "jit_auth";
 
@@ -116,7 +116,7 @@ export default {
     // ---- saved searches
     if (url.pathname === "/api/searches" && request.method === "GET") {
       if (!authorised(request, env)) return json({ error: "unauthorised" }, 401);
-      return json({ searches: await listSearches(env, Math.min(200, Number(url.searchParams.get("limit") || 50)), url.searchParams.get("q") || undefined) });
+      return json({ searches: await listSearches(env, Math.min(500, Number(url.searchParams.get("limit") || 50)), url.searchParams.get("q") || undefined, url.searchParams.get("archived") === "1") });
     }
     const sm = url.pathname.match(/^\/api\/searches\/([\w-]+)$/);
     if (sm && request.method === "GET") {
@@ -155,10 +155,38 @@ export default {
       const b = await getBatch(env, bm[1]);
       return b ? json(b) : json({ error: "not found" }, 404);
     }
+    const ba = url.pathname.match(/^\/api\/batches\/([\w-]+)\/(cancel|retry)$/);
+    if (ba && request.method === "POST") {
+      if (!authorised(request, env)) return json({ error: "unauthorised" }, 401);
+      return json(ba[2] === "cancel" ? await cancelBatch(env, ba[1]) : await retryBatch(env, ba[1], url.searchParams.get("empty") === "1"));
+    }
     if (url.pathname === "/api/batches/run" && request.method === "POST") {
       // Manual kick (useful locally, where cron doesn't fire): process one tick now.
       if (!authorised(request, env)) return json({ error: "unauthorised" }, 401);
       return json(await processBatchTick(env));
+    }
+    // ---- housekeeping: archive / restore (soft delete) and filtered copies of saved searches
+    if ((url.pathname === "/api/archive" || url.pathname === "/api/unarchive") && request.method === "POST") {
+      if (!authorised(request, env)) return json({ error: "unauthorised" }, 401);
+      const body: any = await request.json().catch(() => ({}));
+      const archive = url.pathname === "/api/archive";
+      const out: Record<string, number> = {};
+      for (const kind of ["searches", "batches", "alerts"] as const) {
+        let ids: string[] = Array.isArray(body[kind]) ? body[kind] : [];
+        // {"allExcept": {"searches": ["id1", …]}} archives everything else of every kind
+        if (archive && body.allExcept) { const keep = new Set<string>(body.allExcept[kind] ?? []); ids = (await activeIds(env, kind)).filter((id) => !keep.has(id)); }
+        out[kind] = await setArchived(env, kind, ids, archive);
+      }
+      return json({ [archive ? "archived" : "restored"]: out });
+    }
+    const dm = url.pathname.match(/^\/api\/searches\/([\w-]+)\/derive$/);
+    if (dm && request.method === "POST") {
+      if (!authorised(request, env)) return json({ error: "unauthorised" }, 401);
+      const body: any = await request.json().catch(() => ({}));
+      const beds = (Array.isArray(body.bedrooms) ? body.bedrooms : [body.bedrooms]).map(Number).filter((b: number) => Number.isInteger(b) && b >= 0 && b <= 6);
+      if (!beds.length) return json({ error: "bedrooms required, e.g. [4,5]" }, 400);
+      const r = await deriveSearch(env, dm[1], { bedrooms: beds, enquiryRef: body.enquiryRef, clientAccount: body.clientAccount });
+      return r ? json(r) : json({ error: "not found" }, 404);
     }
     // ---- scheduled jobs over HTTP (Cloud Scheduler on Cloud Run; also usable by hand anywhere)
     if (url.pathname === "/api/cron/tick" && request.method === "POST") {

@@ -71,10 +71,10 @@ ${embed ? "<style>header{display:none}main{padding:8px}</style>" : ""}<header><h
 </div>
 <div id="out"></div>
 </section>
-<section id="tab-history" hidden><div class="card"><h2>Saved searches<span class="sp"></span><input id="hq" placeholder="Filter: location, postcode, ref, client" style="min-width:260px"><button class="sec" onclick="loadHistory()">Refresh</button></h2><div id="hist" class="muted">Loading…</div></div></section>
+<section id="tab-history" hidden><div class="card"><h2>Saved searches<span class="sp"></span><input id="hq" placeholder="Filter: location, postcode, ref, client" style="min-width:260px"><label style="display:inline-flex;gap:6px;align-items:center;font-size:13px;color:var(--mute)"><input type="checkbox" id="harch" onchange="loadHistory()" style="width:auto">Show archived</label><button class="sec" onclick="loadHistory()">Refresh</button></h2><div id="hist" class="muted">Loading…</div></div></section>
 <section id="tab-bulk" hidden>
   <div class="card"><h2>Bulk upload</h2>
-    <p class="muted" style="margin-top:0">Upload a CSV or Excel sheet with one enquiry per row. Rows are searched in the background (about 2 per minute) and every result is saved — you can close this page.
+    <p class="muted" style="margin-top:0">Upload a CSV or Excel sheet with one enquiry per row. Rows are searched in the background (about 1 per minute) and every result is saved — you can close this page.
     Columns: <code>location, check_in, check_out, bedrooms</code> (required) and optional <code>bathrooms, min_rent_pcm, max_rent_pcm, radius_miles, property_type, furnished, accessibility, must_have, min_size_sq_ft, added_within_days, client_account, enquiry_ref, sell_rate_nightly</code>. Multiple values go in one cell separated by <code>;</code> (e.g. bedrooms <code>2;3</code>, must_have <code>parking; pets</code>).
     Dates as YYYY-MM-DD or DD/MM/YYYY. <a href="/api/template.csv">Download template</a>.</p>
     <input type="file" id="bf" accept=".csv,.xlsx"> <button id="bu">Upload &amp; queue</button> <span id="bst" class="muted"></span>
@@ -183,9 +183,9 @@ document.addEventListener('keydown',e=>{ if($('#gal').style.display==='flex'){ i
 
 async function loadHistory(){
   const q=$('#hq').value.trim(); $('#hist').textContent='Loading…';
-  try{ const j=await api('/api/searches?limit=100'+(q?'&q='+encodeURIComponent(q):''));
-    $('#hist').innerHTML=j.searches.length?'<div class="tbl"><table><tr><th>When</th><th>Source</th><th>Location</th><th class="n">Beds</th><th>Dates</th><th>Access</th><th>Client / ref</th><th class="n">Listings</th><th class="n">Median rent</th><th class="n">ONS avg</th></tr>'+
-      j.searches.map(s=>'<tr class="clk" onclick="openSaved(\\''+s.id+'\\')"><td>'+esc(new Date(s.created_at).toLocaleString('en-GB'))+'</td><td><span class="pill q">'+esc(s.source)+'</span></td><td><b>'+esc(s.location)+'</b><div class="muted">'+esc([s.outcode,s.la_name].filter(Boolean).join(' · '))+'</div></td><td class="n">'+esc(bedLabel(s.bedrooms))+'</td><td>'+esc(s.check_in)+' → '+esc(s.check_out)+'</td><td>'+(s.accessibility&&s.accessibility!=='any'?s.accessibility.split(',').map(a=>'<span class="pill a">'+esc(a.replace('_',' '))+'</span>').join(''):'—')+'</td><td>'+esc([s.client_account,s.enquiry_ref].filter(Boolean).join(' · ')||'—')+'</td><td class="n">'+s.listing_count+'</td><td class="n">'+gbp(s.median_rent_pcm)+'</td><td class="n">'+gbp(s.ons_pcm)+'</td></tr>').join('')+'</table></div>':'<p>No saved searches yet.</p>';
+  try{ const arch=$('#harch').checked; const j=await api('/api/searches?limit=200'+(q?'&q='+encodeURIComponent(q):'')+(arch?'&archived=1':''));
+    $('#hist').innerHTML=j.searches.length?'<div class="tbl"><table><tr><th>When</th><th>Source</th><th>Location</th><th class="n">Beds</th><th>Dates</th><th>Access</th><th>Client / ref</th><th class="n">Listings</th><th class="n">Median rent</th><th class="n">ONS avg</th><th></th></tr>'+
+      j.searches.map(s=>'<tr class="clk" onclick="openSaved(\\''+s.id+'\\')"><td>'+esc(new Date(s.created_at).toLocaleString('en-GB'))+'</td><td><span class="pill q">'+esc(s.source)+'</span></td><td><b>'+esc(s.location)+'</b><div class="muted">'+esc([s.outcode,s.la_name].filter(Boolean).join(' · '))+'</div></td><td class="n">'+esc(bedLabel(s.bedrooms))+'</td><td>'+esc(s.check_in)+' → '+esc(s.check_out)+'</td><td>'+(s.accessibility&&s.accessibility!=='any'?s.accessibility.split(',').map(a=>'<span class="pill a">'+esc(a.replace('_',' '))+'</span>').join(''):'—')+'</td><td>'+esc([s.client_account,s.enquiry_ref].filter(Boolean).join(' · ')||'—')+'</td><td class="n">'+s.listing_count+'</td><td class="n">'+gbp(s.median_rent_pcm)+'</td><td class="n">'+gbp(s.ons_pcm)+'</td><td><button class="sec" onclick="event.stopPropagation();archiveSearch(\\''+s.id+'\\','+(s.archived_at?0:1)+')">'+(s.archived_at?'Restore':'Archive')+'</button></td></tr>').join('')+'</table></div>':'<p>'+(arch?'Nothing archived.':'No saved searches yet.')+'</p>';
   }catch(e){ $('#hist').innerHTML='<span class="bad">'+esc(e.message)+'</span>'; }
 }
 $('#hq').addEventListener('keydown',e=>{ if(e.key==='Enter') loadHistory(); });
@@ -206,7 +206,7 @@ $('#bu').onclick=async()=>{
 async function loadBatches(){
   try{ const j=await api('/api/batches');
     $('#bl').innerHTML=j.batches.length?'<div class="tbl"><table><tr><th>Uploaded</th><th>File</th><th>Status</th><th class="n">Done</th><th class="n">Errors</th><th class="n">Listings found</th><th></th></tr>'+
-      j.batches.map(b=>'<tr><td>'+esc(new Date(b.created_at).toLocaleString('en-GB'))+'</td><td>'+esc(b.filename)+'</td><td><span class="pill '+(b.status==='done'?'ok':'w')+'">'+esc(b.status)+'</span></td><td class="n">'+(b.done||0)+' / '+b.total+'</td><td class="n">'+(b.errors||0)+'</td><td class="n">'+(b.listings||0)+'</td><td><button class="sec" onclick="openBatch(\\''+b.id+'\\')">View</button> <a href="/api/batches/'+b.id+'.csv">CSV</a></td></tr>').join('')+'</table></div>':'<p>No uploads yet.</p>';
+      j.batches.map(b=>'<tr><td>'+esc(new Date(b.created_at).toLocaleString('en-GB'))+'</td><td>'+esc(b.filename)+'</td><td><span class="pill '+(b.status==='done'?'ok':'w')+'">'+esc(b.status)+'</span></td><td class="n">'+(b.done||0)+' / '+b.total+'</td><td class="n">'+(b.errors||0)+(b.cancelled?'<div class="muted">'+b.cancelled+' cancelled</div>':'')+'</td><td class="n">'+(b.listings||0)+'</td><td><button class="sec" onclick="openBatch(\\''+b.id+'\\')">View</button>'+(b.pending>0?' <button class="sec" onclick="batchAct(\\''+b.id+'\\',\\'cancel\\')">Cancel</button>':'')+((b.errors>0||b.cancelled>0)?' <button class="sec" onclick="batchAct(\\''+b.id+'\\',\\'retry\\')" title="Re-run failed/cancelled rows">Retry failed</button>':'')+(b.empty>0?' <button class="sec" onclick="batchAct(\\''+b.id+'\\',\\'retry\\',1)" title="Also re-run rows that found 0 listings">Retry empty</button>':'')+' <a href="/api/batches/'+b.id+'.csv">CSV</a></td></tr>').join('')+'</table></div>':'<p>No uploads yet.</p>';
     if(j.batches.some(b=>b.status!=='done')){ clearTimeout(bTimer); bTimer=setTimeout(()=>{ if(!$('#tab-bulk').hidden){ loadBatches(); const open=$('#bdet').dataset.id; if(open) openBatch(open,true);} },15000); }
   }catch(e){ $('#bl').innerHTML='<span class="bad">'+esc(e.message)+'</span>'; }
 }
@@ -268,5 +268,18 @@ async function copyShare(){ const b=$('#share'), o=b.textContent;
   try{ const j=await api('/api/share-link'); await navigator.clipboard.writeText(j.url); b.textContent='Link copied ✓'; }
   catch(e){ b.textContent=/unauth/.test(e.message)?'Sign in first':'Copy failed'; }
   setTimeout(()=>b.textContent=o,2500); }
+
+async function batchAct(id,a,empty){
+  const msg=a==='cancel'?'Cancel the rows that have not started yet?':'Re-queue these rows? Each one runs a new search (Apify credit).';
+  if(!confirm(msg)) return;
+  try{ const j=await api('/api/batches/'+id+'/'+a+(empty?'?empty=1':''),{method:'POST'}); $('#bst').textContent=a==='cancel'?(j.cancelled+' row(s) cancelled.'):(j.requeued+' row(s) re-queued.'); }
+  catch(e){ $('#bst').innerHTML='<span class="bad">'+esc(e.message)+'</span>'; }
+  loadBatches();
+}
+
+async function archiveSearch(id,on){
+  try{ await api(on?'/api/archive':'/api/unarchive',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({searches:[id]})}); loadHistory(); }
+  catch(e){ $('#hist').insertAdjacentHTML('afterbegin','<p class="bad">'+esc(e.message)+'</p>'); }
+}
 </script></body></html>`;
 }

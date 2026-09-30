@@ -181,6 +181,12 @@ export async function processBatchTick(env: Env): Promise<{ processed: number }>
     const t0 = Date.now();
     try {
       const res = await runSearch(JSON.parse(r.request_json), env);
+      // Portals down (e.g. Apify credit used up): fail the row instead of saving a misleading "0 listings" search.
+      const down = res.sources.find((s) => s.source === "apify" && !s.ok && s.error);
+      if (down && !res.listings.length) {
+        const credit = /402|403|platform-feature-disabled|usage|limit|credit|quota/i.test(down.error!);
+        throw new Error(`${credit ? "Apify credit/limit reached" : "Portal search failed"} — retry later. ${down.error!.slice(0, 160)}`);
+      }
       const searchId = await saveSearch(env, res, { source: "batch", batchId: r.batch_id, durationMs: Date.now() - t0 });
       await env.DB!.prepare(`UPDATE batch_rows SET status='done', search_id=?3, listing_count=?4, finished_at=?5, error=NULL WHERE batch_id=?1 AND row_no=?2`)
         .bind(r.batch_id, r.row_no, searchId, res.listings.length, new Date().toISOString()).run();
@@ -200,8 +206,11 @@ export async function listBatches(env: Env): Promise<any[]> {
     `SELECT b.id, b.created_at, b.filename, b.total, b.status,
        SUM(CASE WHEN r.status='done' THEN 1 ELSE 0 END) AS done,
        SUM(CASE WHEN r.status='error' THEN 1 ELSE 0 END) AS errors,
+       SUM(CASE WHEN r.status='cancelled' THEN 1 ELSE 0 END) AS cancelled,
+       SUM(CASE WHEN r.status='pending' THEN 1 ELSE 0 END) AS pending,
+       SUM(CASE WHEN r.status='done' AND COALESCE(r.listing_count,0)=0 THEN 1 ELSE 0 END) AS empty,
        SUM(COALESCE(r.listing_count,0)) AS listings
-     FROM batches b LEFT JOIN batch_rows r ON r.batch_id = b.id GROUP BY b.id ORDER BY b.created_at DESC LIMIT 30`,
+     FROM batches b LEFT JOIN batch_rows r ON r.batch_id = b.id WHERE b.archived_at IS NULL GROUP BY b.id ORDER BY b.created_at DESC LIMIT 30`,
   ).all();
   return results;
 }
@@ -226,4 +235,24 @@ export async function batchCsv(env: Env, id: string): Promise<string> {
   const head = ["row", "enquiry_ref", "client_account", "location", "bedrooms", "check_in", "check_out", "accessibility", "rank", "portal", "address", "url", "rent_pcm", "listing_beds", "baths", "available_from", "furnished", "floor", "access_fit", "agent", "agent_phone", "distance_miles", "score", "main_image"];
   const c = (v: any) => `"${String(v ?? "").replace(/"/g, '""')}"`;
   return [head.join(","), ...results.map((r) => [r.row_no, r.enquiry_ref, r.client_account, r.location, r.bedrooms, r.check_in, r.check_out, r.accessibility, r.rank, r.portal, r.address, r.url, r.rent_pcm, r.l_beds, r.bathrooms, r.available_from, r.furnished, r.floor, r.access_fit, r.agent_name, r.agent_phone, r.distance_miles, r.score, JSON.parse(r.images_json || "[]")[0]].map(c).join(","))].join("\n");
+}
+
+/** Stop a bulk upload: rows not started yet are cancelled (a row already running finishes). */
+export async function cancelBatch(env: Env, id: string): Promise<{ cancelled: number }> {
+  if (!env.DB) return { cancelled: 0 };
+  const r: any = await env.DB.prepare(`UPDATE batch_rows SET status='cancelled', error='cancelled by user' WHERE batch_id=?1 AND status='pending'`).bind(id).run();
+  await env.DB.prepare(`UPDATE batches SET status='cancelled' WHERE id=?1 AND NOT EXISTS (SELECT 1 FROM batch_rows br WHERE br.batch_id=?1 AND br.status='running')`).bind(id).run();
+  return { cancelled: r?.meta?.changes ?? 0 };
+}
+
+/** Re-queue failed/cancelled rows (and, with `empty`, rows that finished with 0 listings) — e.g. after topping up Apify. */
+export async function retryBatch(env: Env, id: string, empty = false): Promise<{ requeued: number }> {
+  if (!env.DB) return { requeued: 0 };
+  const r: any = await env.DB.prepare(
+    `UPDATE batch_rows SET status='pending', attempts=0, error=NULL, started_at=NULL, finished_at=NULL
+     WHERE batch_id=?1 AND (status IN ('error','cancelled') OR (?2 = 1 AND status='done' AND COALESCE(listing_count,0)=0))`,
+  ).bind(id, empty ? 1 : 0).run();
+  const n = r?.meta?.changes ?? 0;
+  if (n) await env.DB.prepare(`UPDATE batches SET status='queued' WHERE id=?1`).bind(id).run();
+  return { requeued: n };
 }

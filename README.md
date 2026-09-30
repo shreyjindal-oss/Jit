@@ -110,7 +110,7 @@ Locally nothing calls the background jobs, so trigger them by hand: `curl.exe -X
 
 ```powershell
 npx wrangler dev                                          # http://127.0.0.1:8787, uses .dev.vars
-npx wrangler d1 migrations apply jit-inventory --remote   # D1 tables
+npx wrangler d1 migrations apply jit-inventory --remote   # D1 tables (re-run after each new migration)
 npx wrangler deploy                                       # = npm run deploy:cf
 ```
 
@@ -190,6 +190,9 @@ Cost: a daily alert over 30 days is 30 searches, about $10 of Apify credit. A we
 | GET | `/api/batches`, `/api/batches/:id`, `/api/batches/:id.csv` | Progress and results |
 | POST | `/api/batches/run` | Process one bulk row now |
 | POST | `/api/cron/tick`, `/api/cron/ons` | Background jobs (called by Cloud Scheduler; needs `x-access-token`) |
+| POST | `/api/archive`, `/api/unarchive` | Archive / restore (soft delete): `{searches:[ids], batches:[ids], alerts:[ids]}` or `{allExcept:{searches:[ids]}}`. Archived items disappear from the lists but stay in the database. |
+| POST | `/api/searches/:id/derive` | Save a copy keeping only some bed sizes: `{bedrooms:[4,5], enquiryRef}` |
+| POST | `/api/batches/:id/cancel`, `/api/batches/:id/retry[?empty=1]` | Stop a bulk upload / re-queue failed (or empty) rows |
 | GET | `/api/share-link` | Link with the access code built in (signed-in users only) |
 | POST / GET | `/api/alerts` | Create (`{name, email, frequencyDays, startDate, endDate, search:{…}}`) / list alerts |
 | POST | `/api/alerts/:id/run`, `/api/alerts/:id/stop` | Run now (emails anything new) / stop |

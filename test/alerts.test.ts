@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { createAlert, processAlertsTick, stopAlert, listAlerts } from "../src/alerts";
 
 const db = new DatabaseSync(":memory:");
-for (const m of ["0001_init.sql", "0002_alerts.sql"]) db.exec(readFileSync(new URL(`../migrations/${m}`, import.meta.url), "utf8"));
+for (const m of ["0001_init.sql", "0002_alerts.sql", "0003_archive.sql"]) db.exec(readFileSync(new URL(`../migrations/${m}`, import.meta.url), "utf8"));
 class Stmt { constructor(public sql: string, public args: any[] = []) {}
   bind(...a: any[]) { return new Stmt(this.sql, a); }
   private a() { return this.args.map((v) => (v === undefined ? null : v)); }

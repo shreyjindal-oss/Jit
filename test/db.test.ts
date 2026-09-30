@@ -6,7 +6,7 @@ import { saveSearch, getSearch, listSearches, searchesToday } from "../src/db";
 import { batchCsv } from "../src/batch";
 
 const db = new DatabaseSync(":memory:");
-db.exec(readFileSync(new URL("../migrations/0001_init.sql", import.meta.url), "utf8"));
+for (const m of ["0001_init.sql", "0002_alerts.sql", "0003_archive.sql"]) db.exec(readFileSync(new URL(`../migrations/${m}`, import.meta.url), "utf8"));
 class Stmt { constructor(public sql: string, public args: any[] = []) {}
   bind(...a: any[]) { return new Stmt(this.sql, a); }
   private conv() { return { sql: this.sql.replace(/\?(\d+)/g, (_, n) => `?${n}`), args: this.args.map((v) => (v === undefined ? null : v)) }; }
@@ -40,3 +40,34 @@ db.prepare(`INSERT INTO batch_rows (batch_id,row_no,status,request_json,search_i
 const csv = await batchCsv(env, "b1");
 assert.equal(csv.trim().split("\n").length, 3); assert.ok(csv.includes("https://x/1.jpg") && csv.includes("Westferry"));
 console.log("DB OK");
+
+// Housekeeping: filtered copy (4 & 5 bed only) + archive everything except it + restore
+{
+  const { deriveSearch, setArchived, activeIds, listSearches: ls } = await import("../src/db");
+  const big: any = { ...res, request: { ...res.request, bedrooms: 0, bedroomOptions: [0, 1, 2, 3, 4, 5, 6], enquiryRef: "JIT-CSV-02 E11" },
+    listings: [2, 4, 5, 5, 1, 6].map((b, i) => ({ id: "x" + i, source: "apify", portal: "Zoopla", kind: "listing", title: `${b} bed`, address: `A${i}`, bedrooms: b, rentPcm: 1000 * b || 900, score: 50 + i, flags: [], images: [`https://i/${i}.jpg`], url: `https://z/${i}` })) };
+  const srcId = (await saveSearch(env, big, { source: "batch" }))!;
+  const d = (await deriveSearch(env, srcId, { bedrooms: [5, 4], enquiryRef: "JIT2-02 E11 4 & 5 bed" }))!;
+  assert.equal(d.kept, 3);
+  const copy = (await getSearch(env, d.id!))!;
+  assert.deepEqual(copy.listings.map((l) => l.bedrooms), [4, 5, 5]); assert.deepEqual(copy.listings[0].images, ["https://i/1.jpg"]);
+  assert.deepEqual([copy.request.bedrooms, copy.request.bedroomOptions, copy.request.enquiryRef], [4, [4, 5], "JIT2-02 E11 4 & 5 bed"]);
+  assert.ok(copy.warnings.some((w: string) => /4 & 5 bed listings only/.test(w)));
+  // archive all except the copy
+  const toArchive = (await activeIds(env, "searches")).filter((id) => id !== d.id);
+  assert.equal(await setArchived(env, "searches", toArchive, true), toArchive.length);
+  const visible = await ls(env, 100);
+  assert.deepEqual(visible.map((s: any) => s.id), [d.id]);
+  assert.equal((await ls(env, 100, undefined, true)).length, toArchive.length);
+  assert.ok(await getSearch(env, srcId)); // archived ≠ deleted
+  await setArchived(env, "searches", [srcId], false);
+  assert.equal((await ls(env, 100)).length, 2);
+  // archiving a batch cancels its pending rows and hides it
+  const { listBatches } = await import("../src/batch");
+  db.prepare(`INSERT INTO batches (id, created_at, filename, total) VALUES ('b9','now','old.csv',1)`).run();
+  db.prepare(`INSERT INTO batch_rows (batch_id,row_no,status,request_json) VALUES ('b9',2,'pending','{}')`).run();
+  await setArchived(env, "batches", ["b9"], true);
+  assert.ok(!(await listBatches(env)).some((b: any) => b.id === "b9"));
+  assert.equal((db.prepare(`SELECT status FROM batch_rows WHERE batch_id='b9'`).get() as any).status, "cancelled");
+  console.log("ARCHIVE + DERIVE OK");
+}
